@@ -57,3 +57,32 @@ pub fn write_env(url: &str, username: &str, password: &str) -> Result<()> {
     std::fs::write(".env", content).context("failed to write .env")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_base_removes_trailing_slash() {
+        let cfg = Config { url: "http://example.com/".into(), username: "u".into(), password: "p".into() };
+        assert_eq!(cfg.api_base(), "http://example.com/player_api.php?username=u&password=p");
+    }
+
+    #[test]
+    fn api_base_no_trailing_slash() {
+        let cfg = Config { url: "http://example.com".into(), username: "u".into(), password: "p".into() };
+        assert_eq!(cfg.api_base(), "http://example.com/player_api.php?username=u&password=p");
+    }
+
+    #[test]
+    fn stream_url_formats_correctly() {
+        let cfg = Config { url: "http://x.tv".into(), username: "u".into(), password: "p".into() };
+        assert_eq!(cfg.stream_url(123, "mp4"), "http://x.tv/movie/u/p/123.mp4");
+    }
+
+    #[test]
+    fn stream_url_with_different_ext() {
+        let cfg = Config { url: "http://x.tv".into(), username: "u".into(), password: "p".into() };
+        assert_eq!(cfg.stream_url(42, "mkv"), "http://x.tv/movie/u/p/42.mkv");
+    }
+}

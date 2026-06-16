@@ -83,3 +83,54 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> Database {
+        Database::open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn open_creates_tables() {
+        let db = test_db();
+        let conn = db.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+                 AND name IN ('categories','movies','wishlist')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn toggle_adds_and_removes() {
+        let db = test_db();
+        assert!(db.toggle_wishlist(42));
+        assert_eq!(db.load_wishlist().len(), 1);
+        assert!(db.load_wishlist().contains(&42));
+        assert!(!db.toggle_wishlist(42));
+        assert!(db.load_wishlist().is_empty());
+    }
+
+    #[test]
+    fn toggle_multiple() {
+        let db = test_db();
+        db.toggle_wishlist(1);
+        db.toggle_wishlist(2);
+        db.toggle_wishlist(3);
+        assert_eq!(db.load_wishlist().len(), 3);
+        db.toggle_wishlist(2);
+        assert_eq!(db.load_wishlist().len(), 2);
+    }
+
+    #[test]
+    fn load_wishlist_empty() {
+        let db = test_db();
+        assert!(db.load_wishlist().is_empty());
+    }
+}

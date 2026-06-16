@@ -95,10 +95,11 @@ pub struct App {
     pub term_width: u16,
     pub term_height: u16,
     pub poster_loading: bool,
-    pub poster_rx: mpsc::Receiver<(u64, String, Option<Box<dyn StatefulProtocol>>)>,
-    pub poster_tx: mpsc::Sender<(u64, String, Option<Box<dyn StatefulProtocol>>)>,
+    pub poster_rx: mpsc::Receiver<(u64, String, Option<(image::DynamicImage, Box<dyn StatefulProtocol>)>)>,
+    pub poster_tx: mpsc::Sender<(u64, String, Option<(image::DynamicImage, Box<dyn StatefulProtocol>)>)>,
     pub font_size: (u16, u16),
     pub poster_protocol: RefCell<Option<Box<dyn StatefulProtocol>>>,
+    pub poster_img_cache: HashMap<String, image::DynamicImage>,
     pub cat_scroll_pos: HashMap<i64, usize>,
     pub poster_gen: Arc<AtomicU64>,
     pub picker: Picker,
@@ -153,8 +154,8 @@ impl App {
     pub fn new() -> Result<Self> {
         let (log_tx, log_rx) = mpsc::channel();
         let (poster_tx, poster_rx): (
-            mpsc::Sender<(u64, String, Option<Box<dyn StatefulProtocol>>)>,
-            mpsc::Receiver<(u64, String, Option<Box<dyn StatefulProtocol>>)>,
+            mpsc::Sender<(u64, String, Option<(image::DynamicImage, Box<dyn StatefulProtocol>)>)>,
+            mpsc::Receiver<(u64, String, Option<(image::DynamicImage, Box<dyn StatefulProtocol>)>)>,
         ) = mpsc::channel();
         match config::load_env()? {
             Some(cfg) => {
@@ -193,6 +194,7 @@ impl App {
                     show_posters: true,
                     current_poster_url: None,
                     poster_debug: String::new(),
+                    poster_img_cache: HashMap::new(),
                     show_help: false,
                     show_logs: false,
                     show_full_poster: false,
@@ -259,6 +261,7 @@ impl App {
                     show_posters: true,
                     current_poster_url: None,
                     poster_debug: String::new(),
+                    poster_img_cache: HashMap::new(),
                     show_help: false,
                     show_logs: false,
                     show_full_poster: false,
@@ -296,7 +299,14 @@ pub fn drain_posters(&mut self) {
             let is_current = msg_gen == current_gen
                 && self.current_poster_url.as_ref() == Some(&msg_url);
             match result {
-                Some(protocol) => {
+                Some((img, protocol)) => {
+                    // Cache decoded image for instant revisit (max 50)
+                    self.poster_img_cache.insert(msg_url.clone(), img);
+                    if self.poster_img_cache.len() > 50 {
+                        if let Some(key) = self.poster_img_cache.keys().next().cloned() {
+                            self.poster_img_cache.remove(&key);
+                        }
+                    }
                     if is_current {
                         self.poster_loading = false;
                         self.poster_debug = format!("displayed (gen={msg_gen})");
@@ -382,8 +392,9 @@ pub fn drain_posters(&mut self) {
                     }
                     match image::load_from_memory(&bytes) {
                         Ok(img) => {
+                            let img_cached = img.clone();
                             let protocol = blocking_picker.new_resize_protocol(img);
-                            Some(protocol)
+                            Some((img_cached, protocol))
                         }
                         Err(_) => {
                             let _ = std::fs::remove_file(&cache_clone);
@@ -397,8 +408,8 @@ pub fn drain_posters(&mut self) {
             .await;
 
             match blocking_res {
-                Ok(Some(protocol)) => {
-                    let _ = tx_clone.send((gen_check, url.clone(), Some(protocol)));
+                Ok(Some((img, protocol))) => {
+                    let _ = tx_clone.send((gen_check, url.clone(), Some((img, protocol))));
                 }
                 _ => {
                     let _ = tx_clone.send((gen_check, url.clone(), None));
@@ -443,8 +454,9 @@ pub fn drain_posters(&mut self) {
                     }
                     match image::load_from_memory(&bytes) {
                         Ok(img) => {
+                            let img_cached = img.clone();
                             let protocol = blocking_picker.new_resize_protocol(img);
-                            Some(protocol)
+                            Some((img_cached, protocol))
                         }
                         Err(_) => {
                             let _ = std::fs::remove_file(&cache_clone);
@@ -458,8 +470,8 @@ pub fn drain_posters(&mut self) {
             .await;
 
             match blocking_res {
-                Ok(Some(protocol)) => {
-                    let _ = tx_clone.send((gen_check, url.clone(), Some(protocol)));
+                Ok(Some((img, protocol))) => {
+                    let _ = tx_clone.send((gen_check, url.clone(), Some((img, protocol))));
                 }
                 _ => {
                     let _ = tx_clone.send((gen_check, url.clone(), None));
@@ -495,16 +507,24 @@ pub fn drain_posters(&mut self) {
         };
 
         let from_disk = std::fs::metadata(format!("poster_cache/{:016x}", hash_url(&url))).is_ok();
-        self.poster_debug = format!(
-            "{}",
-            if from_disk { "disk" } else { "http" }
-        );
-        self.log_tx
-            .send(format!(
-                "poster: {}",
-                if from_disk { "disk" } else { "http" }
-            ))
-            .ok();
+        self.poster_debug = if self.poster_img_cache.contains_key(&url) {
+            "img cache".into()
+        } else if from_disk {
+            "disk".into()
+        } else {
+            "http".into()
+        };
+
+        // Image cache hit — create fresh protocol on main thread (fast, no decode)
+        if let Some(img) = self.poster_img_cache.get(&url) {
+            let protocol = self.picker.new_resize_protocol(img.clone());
+            self.poster_protocol.replace(Some(protocol));
+            self.poster_loading = false;
+            self.current_poster_url = Some(url);
+            return;
+        }
+
+        self.log_tx.send(format!("poster: {}", self.poster_debug)).ok();
 
         self.current_poster_url = Some(url.clone());
         if from_disk {
@@ -722,6 +742,12 @@ pub fn drain_posters(&mut self) {
             }
             KeyCode::Char('y') => self.sort_movies_by_year(),
             KeyCode::Char('c') => self.cycle_cat_sort(),
+            KeyCode::Char('w') => {
+                if let Some(pos) = self.categories.iter().position(|c| c.id == -1) {
+                    self.category_offset = pos;
+                    self.load_movies(-1);
+                }
+            }
             KeyCode::Char('o') => {
                 self.movie_sort = 0;
                 self.apply_movie_sort();
@@ -797,8 +823,9 @@ pub fn drain_posters(&mut self) {
 
     fn sort_movies_by_year(&mut self) {
         self.movie_sort = match self.movie_sort {
-            0 | 2 | 3 | 4 => 1,
+            0 => 1,
             1 => 2,
+            2 => 0,
             _ => 1,
         };
         let label = match self.movie_sort {
@@ -813,8 +840,9 @@ pub fn drain_posters(&mut self) {
 
     fn sort_movies_by_rating(&mut self) {
         self.movie_sort = match self.movie_sort {
-            0 | 2 | 1 | 4 => 3,
+            0 => 3,
             3 => 4,
+            4 => 0,
             _ => 3,
         };
         let label = match self.movie_sort {
@@ -933,8 +961,11 @@ pub fn drain_posters(&mut self) {
     fn scroll_down(&mut self) {
         match self.focus {
             Focus::Categories => {
+                let old = self.category_offset;
                 if self.category_offset + 1 < self.categories.len() {
                     self.category_offset += 1;
+                }
+                if self.category_offset != old {
                     if let Some(cat) = self.categories.get(self.category_offset) {
                         self.load_movies(cat.id);
                     }
@@ -954,9 +985,12 @@ pub fn drain_posters(&mut self) {
     fn scroll_up(&mut self) {
         match self.focus {
             Focus::Categories => {
+                let old = self.category_offset;
                 self.category_offset = self.category_offset.saturating_sub(1);
-                if let Some(cat) = self.categories.get(self.category_offset) {
-                    self.load_movies(cat.id);
+                if self.category_offset != old {
+                    if let Some(cat) = self.categories.get(self.category_offset) {
+                        self.load_movies(cat.id);
+                    }
                 }
             }
             Focus::Movies => {
@@ -1261,5 +1295,103 @@ pub fn drain_posters(&mut self) {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_url_is_deterministic() {
+        let h = hash_url("http://example.com/poster.jpg");
+        assert_eq!(h, hash_url("http://example.com/poster.jpg"));
+    }
+
+    #[test]
+    fn hash_url_differs_for_diff_urls() {
+        assert_ne!(hash_url("a"), hash_url("b"));
+    }
+
+    #[test]
+    fn hash_url_empty() {
+        let h = hash_url("");
+        assert_eq!(h, hash_url(""));
+    }
+
+    #[test]
+    fn is_printable_graphic() {
+        assert!(is_printable('a'));
+        assert!(is_printable('Z'));
+        assert!(is_printable('0'));
+        assert!(is_printable('.'));
+        assert!(is_printable(' '));
+    }
+
+    #[test]
+    fn is_printable_control() {
+        assert!(!is_printable('\n'));
+        assert!(!is_printable('\t'));
+        assert!(!is_printable('\0'));
+    }
+
+    #[test]
+    fn parse_tags_empty() {
+        let (v, a, s, y) = parse_movie_tags("");
+        assert_eq!(v, None);
+        assert_eq!(a, None);
+        assert_eq!(s, None);
+        assert_eq!(y, None);
+    }
+
+    #[test]
+    fn parse_tags_no_tags() {
+        let (v, a, s, y) = parse_movie_tags("Casablanca");
+        assert_eq!(v, None);
+        assert_eq!(a, None);
+        assert_eq!(s, None);
+        assert_eq!(y, None);
+    }
+
+    #[test]
+    fn parse_tags_multi_fhd_year() {
+        let (v, a, s, y) = parse_movie_tags("Star Wars (MULTI) FHD 2024");
+        assert_eq!(v, Some("FHD".into()));
+        assert_eq!(a, Some("Multi".into()));
+        assert_eq!(s, None);
+        assert_eq!(y, Some(2024));
+    }
+
+    #[test]
+    fn parse_tags_4k_vostfr() {
+        let (v, a, s, _y) = parse_movie_tags("The Matrix 4K VOSTFR");
+        assert_eq!(v, Some("4K".into()));
+        assert_eq!(a, Some("VO".into()));
+        assert_eq!(s, Some("ST Fr".into()));
+    }
+
+    #[test]
+    fn parse_tags_year_range() {
+        assert_eq!(parse_movie_tags("Old 1899").3, None);
+        assert_eq!(parse_movie_tags("Movie 1900").3, Some(1900));
+        assert_eq!(parse_movie_tags("Movie 2000").3, Some(2000));
+        assert_eq!(parse_movie_tags("Movie 2099").3, Some(2099));
+        assert_eq!(parse_movie_tags("Future 2100").3, None);
+    }
+
+    #[test]
+    fn parse_tags_vf_english() {
+        let (_v, a, _s, _) = parse_movie_tags("Le Dîner de Cons VF");
+        assert_eq!(a, Some("VF".into()));
+        let (_, a2, _, _) = parse_movie_tags("Die Hard English");
+        assert_eq!(a2, Some("EN".into()));
+    }
+
+    #[test]
+    fn parse_tags_subbed() {
+        let (_, _, s, _) = parse_movie_tags("Anime SUBBED");
+        assert_eq!(s, Some("Sub".into()));
+        let (_, _, s2, _) = parse_movie_tags("Anime SUBFRENCH");
+        assert_eq!(s2, Some("Sub Fr".into()));
     }
 }

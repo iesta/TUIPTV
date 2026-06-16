@@ -91,3 +91,48 @@ pub async fn sync_vod_streams(config: &Config, db: &Database) -> Result<usize> {
     conn.execute_batch("COMMIT")?;
     Ok(streams.len())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_movie_with_string_category() {
+        let json = r#"{"name":"Test","category_id":"5"}"#;
+        let m: XtreamMovie = serde_json::from_str(json).unwrap();
+        assert_eq!(m.name, "Test");
+        assert_eq!(m.category_id, "5");
+    }
+
+    #[test]
+    fn deserialize_movie_with_number_category() {
+        let json = r#"{"name":"Test","category_id":7}"#;
+        let m: XtreamMovie = serde_json::from_str(json).unwrap();
+        assert_eq!(m.category_id, "7");
+    }
+
+    #[test]
+    fn deserialize_movie_with_array_category() {
+        let json = r#"{"name":"Test","category_id":["12"]}"#;
+        let m: XtreamMovie = serde_json::from_str(json).unwrap();
+        assert_eq!(m.category_id, "12");
+    }
+
+    #[test]
+    fn deserialize_with_minimal_fields() {
+        let json = r#"{"name":"Minimal","category_id":"1"}"#;
+        let m: XtreamMovie = serde_json::from_str(json).unwrap();
+        assert_eq!(m.name, "Minimal");
+        assert!(m.stream_icon.is_none());
+        assert!(m.rating.is_none());
+        assert!(m.plot.is_none());
+        assert!(m.genre.is_none());
+    }
+
+    #[test]
+    fn deserialize_category() {
+        let json = r#"{"category_id":"3","category_name":"Action"}"#;
+        let c: XtreamCategory = serde_json::from_str(json).unwrap();
+        assert_eq!(c.category_name, "Action");
+    }
+}
