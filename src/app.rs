@@ -3,12 +3,68 @@ use crate::config::{self, Config};
 use crate::db::Database;
 use anyhow::Result;
 use crossterm::event::KeyCode;
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 
+use regex::RegexBuilder;
+
+fn hash_url(url: &str) -> u64 {
+    let mut h = 5381u64;
+    for b in url.bytes() {
+        h = h.wrapping_mul(33).wrapping_add(b as u64);
+    }
+    h
+}
+
 fn is_printable(c: char) -> bool {
     c.is_ascii_graphic() || c == ' '
+}
+
+fn parse_movie_tags(name: &str) -> (Option<String>, Option<String>, Option<String>, Option<i32>) {
+    let upper = name.to_uppercase();
+    let mut version = None;
+    let mut audio = None;
+    let mut subs = None;
+    let mut year = None;
+
+    for token in
+        upper.split(|c: char| c == ' ' || c == '(' || c == ')' || c == '[' || c == ']' || c == '.')
+    {
+        match token {
+            "4K" | "UHD" | "2160P" => version = Some("4K".into()),
+            "FHD" | "1080P" => version = Some("FHD".into()),
+            "HD" | "720P" => version = Some("HD".into()),
+            "SD" | "480P" => version = Some("SD".into()),
+            "MULTI" | "MULTILANGUE" | "MULTI-LANGUE" => audio = Some("Multi".into()),
+            "VO" | "VOST" => audio = Some("VO".into()),
+            "VF" | "VFF" | "TRUEFRENCH" | "FRENCH" => audio = Some("VF".into()),
+            "VOSTFR" => {
+                audio = Some("VO".into());
+                subs = Some("ST Fr".into());
+            }
+            "ENGLISH" | "ANGLAIS" => audio = Some("EN".into()),
+            "SUBFRENCH" | "SUBFR" => subs = Some("Sub Fr".into()),
+            "SUBBED" | "SUB" => subs = Some("Sub".into()),
+            _ => {
+                if year.is_none() {
+                    if let Ok(y) = token.parse::<i32>() {
+                        if y >= 1900 && y <= 2099 {
+                            year = Some(y);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (version, audio, subs, year)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,6 +90,31 @@ pub struct App {
     pub log_rx: mpsc::Receiver<String>,
     pub log_tx: mpsc::Sender<String>,
     pub syncing: bool,
+    pub column_ratios: [u16; 3],
+    pub dragging_gutter: Option<usize>,
+    pub term_width: u16,
+    pub term_height: u16,
+    pub poster_loading: bool,
+    pub poster_rx: mpsc::Receiver<(u64, String, Option<Box<dyn StatefulProtocol>>)>,
+    pub poster_tx: mpsc::Sender<(u64, String, Option<Box<dyn StatefulProtocol>>)>,
+    pub font_size: (u16, u16),
+    pub poster_protocol: RefCell<Option<Box<dyn StatefulProtocol>>>,
+    pub cat_scroll_pos: HashMap<i64, usize>,
+    pub poster_gen: Arc<AtomicU64>,
+    pub picker: Picker,
+    pub show_posters: bool,
+    pub current_poster_url: Option<String>,
+    pub poster_debug: String,
+    pub show_help: bool,
+    pub show_logs: bool,
+    pub show_full_poster: bool,
+    pub cat_sort_mode: u8,
+    pub movie_sort: u8,
+    pub show_filter: bool,
+    pub filter_query: String,
+    pub filtered_movies: Vec<MovieItem>,
+    pub pending_g: bool,
+    pub wishlist: HashSet<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +132,11 @@ pub struct MovieItem {
     pub release_date: Option<String>,
     pub plot: Option<String>,
     pub container_extension: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<i32>,
+    pub version: Option<String>,
+    pub audio: Option<String>,
+    pub subs: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -66,6 +152,10 @@ const MAX_LOG_LEN: usize = 500;
 impl App {
     pub fn new() -> Result<Self> {
         let (log_tx, log_rx) = mpsc::channel();
+        let (poster_tx, poster_rx): (
+            mpsc::Sender<(u64, String, Option<Box<dyn StatefulProtocol>>)>,
+            mpsc::Receiver<(u64, String, Option<Box<dyn StatefulProtocol>>)>,
+        ) = mpsc::channel();
         match config::load_env()? {
             Some(cfg) => {
                 let db = Arc::new(Database::open("iptv_cache.db")?);
@@ -88,14 +178,45 @@ impl App {
                     log_rx,
                     log_tx: log_tx.clone(),
                     syncing: false,
+                    column_ratios: [20, 45, 35],
+                    dragging_gutter: None,
+                    term_width: 0,
+                    term_height: 0,
+                    poster_loading: false,
+                    poster_rx,
+                    poster_tx: poster_tx.clone(),
+                    font_size: (8, 16),
+                    poster_protocol: RefCell::new(None),
+                    cat_scroll_pos: HashMap::new(),
+                    poster_gen: Arc::new(AtomicU64::new(0)),
+                    picker: Picker::new((8, 16)),
+                    show_posters: true,
+                    current_poster_url: None,
+                    poster_debug: String::new(),
+                    show_help: false,
+                    show_logs: false,
+                    show_full_poster: false,
+                    cat_sort_mode: 0,
+                    movie_sort: 0,
+                    show_filter: false,
+                    filter_query: String::new(),
+                    filtered_movies: Vec::new(),
+                    pending_g: false,
+                    wishlist: HashSet::new(),
                 };
+                s.load_layout();
+                if let Some(ref db) = s.db {
+                    s.wishlist = db.load_wishlist();
+                }
                 s.load_categories();
                 let n_cats = s.categories.len();
                 if n_cats > 0 {
-                    let n_movies = 0;
-                    s.status = format!("{n_cats} categories, {n_movies} movies cached");
+                    let first = s.categories[0].id;
+                    s.load_movies(first);
+                    let n_movies = s.movies.len();
+                    s.status = format!("{n_cats} categories, {n_movies} movies");
                     s.log_tx
-                        .send(format!("loaded {n_cats} categories from cache"))
+                        .send(format!("loaded {n_cats} categories, {n_movies} movies"))
                         .ok();
                 } else {
                     s.status = "No cache — press r to sync".into();
@@ -123,6 +244,31 @@ impl App {
                     log_rx,
                     log_tx,
                     syncing: false,
+                    column_ratios: [20, 45, 35],
+                    dragging_gutter: None,
+                    term_width: 0,
+                    term_height: 0,
+                    poster_loading: false,
+                    poster_rx,
+                    poster_tx: poster_tx,
+                    font_size: (8, 16),
+                    poster_protocol: RefCell::new(None),
+                    cat_scroll_pos: HashMap::new(),
+                    poster_gen: Arc::new(AtomicU64::new(0)),
+                    picker: Picker::new((8, 16)),
+                    show_posters: true,
+                    current_poster_url: None,
+                    poster_debug: String::new(),
+                    show_help: false,
+                    show_logs: false,
+                    show_full_poster: false,
+                    cat_sort_mode: 0,
+                    movie_sort: 0,
+                    show_filter: false,
+                    filter_query: String::new(),
+                    filtered_movies: Vec::new(),
+                    pending_g: false,
+                    wishlist: HashSet::new(),
                 })
             }
         }
@@ -142,6 +288,267 @@ impl App {
             }
         }
         done
+    }
+
+pub fn drain_posters(&mut self) {
+        let current_gen = self.poster_gen.load(Ordering::SeqCst);
+        while let Ok((msg_gen, msg_url, result)) = self.poster_rx.try_recv() {
+            let is_current = msg_gen == current_gen
+                && self.current_poster_url.as_ref() == Some(&msg_url);
+            match result {
+                Some(protocol) => {
+                    if is_current {
+                        self.poster_loading = false;
+                        self.poster_debug = format!("displayed (gen={msg_gen})");
+                        self.poster_protocol.replace(Some(protocol));
+                    }
+                }
+                None => {
+                    if is_current {
+                        self.poster_loading = false;
+                        self.poster_debug = format!("load failed (gen={msg_gen})");
+                        self.poster_protocol.replace(None);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn load_poster(&mut self, url: &str) {
+        if url.is_empty() {
+            return;
+        }
+        let gen = self.poster_gen.load(Ordering::SeqCst);
+        let gen_arc = self.poster_gen.clone();
+        let tx = self.poster_tx.clone();
+        let url = url.to_string();
+        let picker = self.picker;
+        let cache_path = format!("poster_cache/{:016x}", hash_url(&url));
+
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let bytes = match std::fs::read(&cache_path) {
+                Ok(data) => {
+                    if gen_arc.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    data
+                }
+                Err(_) => {
+                    let client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(15))
+                        .build()
+                        .unwrap();
+                    let resp = match client.get(&url).send().await {
+                        Ok(r) => r,
+                        Err(_) => {
+                            let _ = tx.send((gen, url.clone(), None));
+                            return;
+                        }
+                    };
+                    if gen_arc.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    let data = match resp.bytes().await {
+                        Ok(b) => b.to_vec(),
+                        Err(_) => {
+                            let _ = tx.send((gen, url.clone(), None));
+                            return;
+                        }
+                    };
+                    if gen_arc.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    let _ = std::fs::create_dir_all("poster_cache");
+                    let _ = std::fs::write(&cache_path, &data);
+                    data
+                }
+            };
+
+            if gen_arc.load(Ordering::SeqCst) != gen {
+                return;
+            }
+
+            let gen_local = gen_arc.clone();
+            let gen_check = gen;
+            let tx_clone = tx.clone();
+            let cache_clone = cache_path.clone();
+            let mut blocking_picker = picker;
+            let blocking_res = tokio::task::spawn_blocking(move || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if gen_local.load(Ordering::SeqCst) != gen_check {
+                        return None;
+                    }
+                    match image::load_from_memory(&bytes) {
+                        Ok(img) => {
+                            let protocol = blocking_picker.new_resize_protocol(img);
+                            Some(protocol)
+                        }
+                        Err(_) => {
+                            let _ = std::fs::remove_file(&cache_clone);
+                            None
+                        }
+                    }
+                }))
+                .ok()
+                .flatten()
+            })
+            .await;
+
+            match blocking_res {
+                Ok(Some(protocol)) => {
+                    let _ = tx_clone.send((gen_check, url.clone(), Some(protocol)));
+                }
+                _ => {
+                    let _ = tx_clone.send((gen_check, url.clone(), None));
+                }
+            }
+        });
+    }
+
+    pub fn load_poster_fast(&mut self, url: &str) {
+        if url.is_empty() {
+            return;
+        }
+        let gen = self.poster_gen.load(Ordering::SeqCst);
+        let gen_arc = self.poster_gen.clone();
+        let tx = self.poster_tx.clone();
+        let url = url.to_string();
+        let picker = self.picker;
+        let cache_path = format!("poster_cache/{:016x}", hash_url(&url));
+
+        tokio::spawn(async move {
+            let bytes = match std::fs::read(&cache_path) {
+                Ok(data) => data,
+                Err(_) => {
+                    let _ = tx.send((gen, url.clone(), None));
+                    return;
+                }
+            };
+
+            if gen_arc.load(Ordering::SeqCst) != gen {
+                return;
+            }
+
+            let gen_local = gen_arc.clone();
+            let gen_check = gen;
+            let tx_clone = tx.clone();
+            let cache_clone = cache_path.clone();
+            let mut blocking_picker = picker;
+            let blocking_res = tokio::task::spawn_blocking(move || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if gen_local.load(Ordering::SeqCst) != gen_check {
+                        return None;
+                    }
+                    match image::load_from_memory(&bytes) {
+                        Ok(img) => {
+                            let protocol = blocking_picker.new_resize_protocol(img);
+                            Some(protocol)
+                        }
+                        Err(_) => {
+                            let _ = std::fs::remove_file(&cache_clone);
+                            None
+                        }
+                    }
+                }))
+                .ok()
+                .flatten()
+            })
+            .await;
+
+            match blocking_res {
+                Ok(Some(protocol)) => {
+                    let _ = tx_clone.send((gen_check, url.clone(), Some(protocol)));
+                }
+                _ => {
+                    let _ = tx_clone.send((gen_check, url.clone(), None));
+                }
+            }
+        });
+    }
+
+    fn load_current_poster(&mut self) {
+        // Clear old poster — bytes already cached by drain_posters
+        self.poster_protocol.replace(None);
+        self.current_poster_url.take();
+
+        if !self.show_posters {
+            self.poster_loading = false;
+            return;
+        }
+        self.poster_loading = true;
+        self.poster_gen.fetch_add(1, Ordering::SeqCst);
+        let list = self.active_movies();
+        let url = list
+            .get(self.movie_offset)
+            .and_then(|m| m.stream_icon.as_ref())
+            .filter(|u| !u.is_empty())
+            .cloned();
+        let url = match url {
+            Some(u) => u,
+            None => {
+                self.poster_loading = false;
+                self.poster_debug = "no image".into();
+                return;
+            }
+        };
+
+        let from_disk = std::fs::metadata(format!("poster_cache/{:016x}", hash_url(&url))).is_ok();
+        self.poster_debug = format!(
+            "{}",
+            if from_disk { "disk" } else { "http" }
+        );
+        self.log_tx
+            .send(format!(
+                "poster: {}",
+                if from_disk { "disk" } else { "http" }
+            ))
+            .ok();
+
+        self.current_poster_url = Some(url.clone());
+        if from_disk {
+            self.load_poster_fast(&url);
+        } else {
+            self.load_poster(&url);
+        }
+    }
+
+    pub fn save_layout(&self) {
+        let s = format!(
+            "{},{},{},{},{},{}",
+            self.column_ratios[0],
+            self.column_ratios[1],
+            self.column_ratios[2],
+            self.show_logs as u8,
+            self.cat_sort_mode,
+            self.movie_sort,
+        );
+        let _ = std::fs::write("iptv_layout.dat", s);
+    }
+
+    pub fn load_layout(&mut self) {
+        if let Ok(s) = std::fs::read_to_string("iptv_layout.dat") {
+            let parts: Vec<&str> = s.trim().split(',').collect();
+            if parts.len() >= 3 {
+                if let (Ok(a), Ok(b), Ok(c)) =
+                    (parts[0].parse(), parts[1].parse(), parts[2].parse())
+                {
+                    if a >= 5 && b >= 5 && c >= 5 {
+                        self.column_ratios = [a, b, c];
+                    }
+                }
+                if parts.len() >= 4 {
+                    self.show_logs = parts[3] == "1";
+                }
+                if parts.len() >= 5 {
+                    self.cat_sort_mode = parts[4].parse().unwrap_or(0);
+                }
+                if parts.len() >= 6 {
+                    self.movie_sort = parts[5].parse().unwrap_or(0);
+                }
+            }
+        }
     }
 
     pub fn log_tx(&self) -> mpsc::Sender<String> {
@@ -165,6 +572,74 @@ impl App {
     pub fn handle_event(&mut self, key: KeyCode) -> bool {
         if self.show_config {
             return self.handle_config_event(key);
+        }
+        if self.show_help {
+            self.show_help = false;
+            return true;
+        }
+        if self.show_full_poster {
+            self.show_full_poster = false;
+            return true;
+        }
+        if self.show_filter && self.focus == Focus::Movies {
+            match key {
+                KeyCode::Esc => {
+                    let keep_id = self.active_movies().get(self.movie_offset).map(|m| m.id);
+                    self.show_filter = false;
+                    self.filter_query.clear();
+                    self.filtered_movies.clear();
+                    if let Some(id) = keep_id {
+                        if let Some(pos) = self.movies.iter().position(|m| m.id == id) {
+                            self.movie_offset = pos;
+                        }
+                    }
+                    return true;
+                }
+                KeyCode::Enter => {
+                    let keep_id = self.active_movies().get(self.movie_offset).map(|m| m.id);
+                    self.show_filter = false;
+                    if !self.filter_query.is_empty() {
+                        self.apply_filter();
+                    } else {
+                        self.filtered_movies.clear();
+                    }
+                    self.filter_query.clear();
+                    if let Some(id) = keep_id {
+                        if let Some(pos) = self.movies.iter().position(|m| m.id == id) {
+                            self.movie_offset = pos;
+                        }
+                    }
+                    self.load_current_poster();
+                    return true;
+                }
+                KeyCode::Backspace => {
+                    self.filter_query.pop();
+                    self.apply_filter();
+                    return true;
+                }
+                KeyCode::Char(c) if is_printable(c) => {
+                    self.filter_query.push(c);
+                    self.apply_filter();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        // gg / G handling
+        if self.pending_g {
+            self.pending_g = false;
+            if key == KeyCode::Char('g') && self.focus != Focus::Details {
+                match self.focus {
+                    Focus::Categories => self.category_offset = 0,
+                    _ => {
+                        self.movie_offset = 0;
+                        self.load_current_poster();
+                    }
+                }
+                return true;
+            }
+            // fall through to handle the current key normally
         }
         match key {
             KeyCode::Char('q') => return false,
@@ -196,20 +671,207 @@ impl App {
                     Focus::Details => Focus::Movies,
                 };
             }
+            KeyCode::Char('(') => self.resize_focused(-3),
+            KeyCode::Char(')') => self.resize_focused(3),
             KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
+            KeyCode::Char('g') if self.focus != Focus::Details => {
+                self.pending_g = true;
+            }
+            KeyCode::Char('G') if self.focus != Focus::Details => match self.focus {
+                Focus::Categories => {
+                    self.category_offset = self.categories.len().saturating_sub(1);
+                }
+                _ => {
+                    let n = self.active_movies().len();
+                    self.movie_offset = n.saturating_sub(1);
+                    self.load_current_poster();
+                }
+            },
             KeyCode::Enter if self.focus == Focus::Categories => {
                 if let Some(cat) = self.categories.get(self.category_offset) {
                     self.load_movies(cat.id);
                     self.focus = Focus::Movies;
                 }
             }
-            KeyCode::Char('r') => {
-                self.status = "Syncing...".into();
+            KeyCode::Char('r') => self.sort_movies_by_rating(),
+            KeyCode::Char('i') => {
+                self.show_posters = !self.show_posters;
+                self.load_current_poster();
+            }
+            KeyCode::Char('f') => {
+                self.show_full_poster = !self.show_full_poster;
+            }
+            KeyCode::Char('v') => {
+                if let (Some(cfg), Some(m)) =
+                    (self.config.as_ref(), self.movies.get(self.movie_offset))
+                {
+                    let url =
+                        cfg.stream_url(m.id, m.container_extension.as_deref().unwrap_or("mp4"));
+                    self.log_tx
+                        .send(format!("▶ VLC: {}", &url[..url.len().min(120)]))
+                        .ok();
+                    #[cfg(target_os = "macos")]
+                    std::process::Command::new("open")
+                        .args(["-a", "VLC", &url])
+                        .spawn()
+                        .ok();
+                    #[cfg(target_os = "linux")]
+                    std::process::Command::new("vlc").arg(&url).spawn().ok();
+                }
+            }
+            KeyCode::Char('y') => self.sort_movies_by_year(),
+            KeyCode::Char('c') => self.cycle_cat_sort(),
+            KeyCode::Char('o') => {
+                self.movie_sort = 0;
+                self.apply_movie_sort();
+                self.status = "default order".into();
+                self.log_tx.send("sort: default".into()).ok();
+            }
+            KeyCode::Char('?') => self.show_help = !self.show_help,
+            KeyCode::Char('/') => {
+                self.focus = Focus::Movies;
+                self.show_filter = true;
+                self.filtered_movies.clear();
+            }
+            KeyCode::Char(' ') if self.focus == Focus::Movies || self.focus == Focus::Details => {
+                self.toggle_wishlist();
             }
             _ => {}
         }
         true
+    }
+
+    fn apply_movie_sort(&mut self) {
+        if self.movies.is_empty() {
+            return;
+        }
+        let current_id = self.movies.get(self.movie_offset).map(|m| m.id);
+        match self.movie_sort {
+            0 => self.movies.sort_by(|a, b| a.name.cmp(&b.name)),
+            1 => self.movies.sort_by(|a, b| b.year.cmp(&a.year)),
+            2 => self.movies.sort_by(|a, b| a.year.cmp(&b.year)),
+            3 => {
+                self.movies.sort_by(|a, b| {
+                    let ra = a
+                        .rating
+                        .as_deref()
+                        .unwrap_or("0")
+                        .parse::<f64>()
+                        .unwrap_or(0.0);
+                    let rb = b
+                        .rating
+                        .as_deref()
+                        .unwrap_or("0")
+                        .parse::<f64>()
+                        .unwrap_or(0.0);
+                    rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            4 => {
+                self.movies.sort_by(|a, b| {
+                    let ra = a
+                        .rating
+                        .as_deref()
+                        .unwrap_or("0")
+                        .parse::<f64>()
+                        .unwrap_or(0.0);
+                    let rb = b
+                        .rating
+                        .as_deref()
+                        .unwrap_or("0")
+                        .parse::<f64>()
+                        .unwrap_or(0.0);
+                    ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            _ => {}
+        }
+        if let Some(id) = current_id {
+            if let Some(pos) = self.movies.iter().position(|m| m.id == id) {
+                self.movie_offset = pos;
+            }
+        }
+        self.load_current_poster();
+    }
+
+    fn sort_movies_by_year(&mut self) {
+        self.movie_sort = match self.movie_sort {
+            0 | 2 | 3 | 4 => 1,
+            1 => 2,
+            _ => 1,
+        };
+        let label = match self.movie_sort {
+            1 => "year ↓",
+            2 => "year ↑",
+            _ => "default",
+        };
+        self.status = format!("sorted by {label}");
+        self.log_tx.send(format!("sort: {label}")).ok();
+        self.apply_movie_sort();
+    }
+
+    fn sort_movies_by_rating(&mut self) {
+        self.movie_sort = match self.movie_sort {
+            0 | 2 | 1 | 4 => 3,
+            3 => 4,
+            _ => 3,
+        };
+        let label = match self.movie_sort {
+            3 => "rating ↓",
+            4 => "rating ↑",
+            _ => "default",
+        };
+        self.status = format!("sorted by {label}");
+        self.log_tx.send(format!("sort: {label}")).ok();
+        self.apply_movie_sort();
+    }
+
+    fn cycle_cat_sort(&mut self) {
+        self.cat_sort_mode = (self.cat_sort_mode + 1) % 3;
+        let label = match self.cat_sort_mode {
+            0 => "name A→Z",
+            1 => "provider order",
+            _ => "name Z→A",
+        };
+        self.status = format!("categories: {label}");
+        self.log_tx.send(format!("cat sort: {label}")).ok();
+        self.load_categories();
+    }
+
+    pub fn toggle_wishlist(&mut self) {
+        let id = self.movies.get(self.movie_offset).map(|m| m.id);
+        if let (Some(movie_id), Some(ref db)) = (id, self.db.as_ref()) {
+            let added = db.toggle_wishlist(movie_id);
+            if added {
+                self.wishlist.insert(movie_id);
+                self.log_tx.send("❤️ added to wishlist".into()).ok();
+            } else {
+                self.wishlist.remove(&movie_id);
+                self.log_tx.send("💔 removed from wishlist".into()).ok();
+            }
+            // Update the wishlist category entry in-place
+            let wc = self.wishlist.len();
+            if wc > 0 {
+                if self.categories.first().map(|c| c.id) == Some(-1) {
+                    self.categories[0].name = format!("❤️ Wishlist ({wc})");
+                } else {
+                    self.categories.insert(
+                        0,
+                        CategoryItem {
+                            id: -1,
+                            name: format!("❤️ Wishlist ({wc})"),
+                        },
+                    );
+                }
+            } else {
+                self.categories.retain(|c| c.id != -1);
+            }
+            // If viewing wishlist category, reload movies
+            if self.selected_category == Some(-1) {
+                self.load_movies(-1);
+            }
+        }
     }
 
     fn handle_config_event(&mut self, key: KeyCode) -> bool {
@@ -273,11 +935,16 @@ impl App {
             Focus::Categories => {
                 if self.category_offset + 1 < self.categories.len() {
                     self.category_offset += 1;
+                    if let Some(cat) = self.categories.get(self.category_offset) {
+                        self.load_movies(cat.id);
+                    }
                 }
             }
             Focus::Movies => {
-                if self.movie_offset + 1 < self.movies.len() {
+                let list = self.active_movies();
+                if self.movie_offset + 1 < list.len() {
                     self.movie_offset += 1;
+                    self.load_current_poster();
                 }
             }
             Focus::Details => {}
@@ -288,22 +955,80 @@ impl App {
         match self.focus {
             Focus::Categories => {
                 self.category_offset = self.category_offset.saturating_sub(1);
+                if let Some(cat) = self.categories.get(self.category_offset) {
+                    self.load_movies(cat.id);
+                }
             }
             Focus::Movies => {
                 self.movie_offset = self.movie_offset.saturating_sub(1);
+                self.load_current_poster();
             }
             Focus::Details => {}
         }
     }
 
+    pub fn active_movies(&self) -> &[MovieItem] {
+        if self.show_filter && !self.filtered_movies.is_empty() {
+            &self.filtered_movies
+        } else {
+            &self.movies
+        }
+    }
+
+    fn apply_filter(&mut self) {
+        if self.filter_query.is_empty() {
+            self.filtered_movies.clear();
+            return;
+        }
+        let pattern = RegexBuilder::new(&self.filter_query)
+            .case_insensitive(true)
+            .build();
+        match pattern {
+            Ok(re) => {
+                self.filtered_movies = self
+                    .movies
+                    .iter()
+                    .filter(|m| re.is_match(&m.name))
+                    .cloned()
+                    .collect();
+            }
+            Err(_) => {
+                // fallback: case-insensitive substring
+                let lower = self.filter_query.to_lowercase();
+                self.filtered_movies = self
+                    .movies
+                    .iter()
+                    .filter(|m| m.name.to_lowercase().contains(&lower))
+                    .cloned()
+                    .collect();
+            }
+        }
+        if self.movie_offset >= self.filtered_movies.len() {
+            self.movie_offset = self.filtered_movies.len().saturating_sub(1);
+        }
+        self.load_current_poster();
+    }
+
     pub fn load_categories(&mut self) {
         self.categories.clear();
         self.category_offset = 0;
+        // Synthetic wishlist category at top
+        let wish_count = self.wishlist.len();
+        if wish_count > 0 {
+            self.categories.push(CategoryItem {
+                id: -1,
+                name: format!("❤️ Wishlist ({wish_count})"),
+            });
+        }
         if let Some(ref db) = self.db {
             let conn = db.conn.lock().unwrap();
-            let mut stmt = conn
-                .prepare("SELECT id, name FROM categories ORDER BY name")
-                .unwrap();
+            let order = match self.cat_sort_mode {
+                0 => "name",
+                1 => "id",
+                _ => "name DESC",
+            };
+            let sql = format!("SELECT id, name FROM categories ORDER BY {order}");
+            let mut stmt = conn.prepare(&sql).unwrap();
             let rows = stmt
                 .query_map([], |row| {
                     Ok(CategoryItem {
@@ -319,24 +1044,83 @@ impl App {
     }
 
     pub fn load_movies(&mut self, category_id: i64) {
+        if let Some(old) = self.selected_category {
+            self.cat_scroll_pos.insert(old, self.movie_offset);
+        }
         self.movies.clear();
         self.movie_offset = 0;
         self.selected_category = Some(category_id);
-        if let Some(ref db) = self.db {
+        self.show_filter = false;
+        self.filter_query.clear();
+        self.filtered_movies.clear();
+        if category_id == -1 {
+            // Wishlist — load movies by IDs
+            let ids: Vec<String> = self.wishlist.iter().map(|id| id.to_string()).collect();
+            if !ids.is_empty() {
+                if let Some(ref db) = self.db {
+                    let conn = db.conn.lock().unwrap();
+                    let sql = format!(
+                        "SELECT id, name, stream_icon, rating, release_date, plot, container_extension, genre FROM movies WHERE id IN ({}) ORDER BY name",
+                        ids.join(",")
+                    );
+                    let mut stmt = conn.prepare(&sql).unwrap();
+                    let rows = stmt
+                        .query_map([], |row| {
+                            let name: String = row.get(1)?;
+                            let release_date: Option<String> = row.get(4)?;
+                            let (version, audio, subs, year_from_name) = parse_movie_tags(&name);
+                            let year = release_date
+                                .as_ref()
+                                .and_then(|d| d[..4].parse::<i32>().ok())
+                                .or(year_from_name);
+                            Ok(MovieItem {
+                                id: row.get(0)?,
+                                name,
+                                stream_icon: row.get(2)?,
+                                rating: row.get(3)?,
+                                release_date,
+                                plot: row.get(5)?,
+                                container_extension: row.get(6)?,
+                                genre: row.get(7)?,
+                                year,
+                                version,
+                                audio,
+                                subs,
+                            })
+                        })
+                        .unwrap();
+                    for row in rows.flatten() {
+                        self.movies.push(row);
+                    }
+                }
+            }
+        } else if let Some(ref db) = self.db {
             let conn = db.conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, name, stream_icon, rating, release_date, plot, container_extension FROM movies WHERE category_id = ?1 ORDER BY name")
+                .prepare("SELECT id, name, stream_icon, rating, release_date, plot, container_extension, genre FROM movies WHERE category_id = ?1 ORDER BY name")
                 .unwrap();
             let rows = stmt
                 .query_map(rusqlite::params![category_id], |row| {
+                    let name: String = row.get(1)?;
+                    let release_date: Option<String> = row.get(4)?;
+                    let (version, audio, subs, year_from_name) = parse_movie_tags(&name);
+                    let year = release_date
+                        .as_ref()
+                        .and_then(|d| d[..4].parse::<i32>().ok())
+                        .or(year_from_name);
                     Ok(MovieItem {
                         id: row.get(0)?,
-                        name: row.get(1)?,
+                        name,
                         stream_icon: row.get(2)?,
                         rating: row.get(3)?,
-                        release_date: row.get(4)?,
+                        release_date,
                         plot: row.get(5)?,
                         container_extension: row.get(6)?,
+                        genre: row.get(7)?,
+                        year,
+                        version,
+                        audio,
+                        subs,
                     })
                 })
                 .unwrap();
@@ -344,6 +1128,13 @@ impl App {
                 self.movies.push(row);
             }
         }
+        if let Some(&pos) = self.cat_scroll_pos.get(&category_id) {
+            self.movie_offset = pos.min(self.movies.len().saturating_sub(1));
+        }
+        if self.movie_sort != 0 {
+            self.apply_movie_sort();
+        }
+        self.load_current_poster();
     }
 
     pub fn sync(&mut self) {
@@ -372,5 +1163,103 @@ impl App {
             };
             log.send("SYNC_DONE".into()).ok();
         });
+    }
+
+    fn resize_focused(&mut self, delta: i16) {
+        let idx = match self.focus {
+            Focus::Categories => 0,
+            Focus::Movies => 1,
+            Focus::Details => 2,
+        };
+        let old = self.column_ratios[idx];
+        let new = (old as i16 + delta).clamp(5, 80) as u16;
+        let diff = new as i16 - old as i16;
+        self.column_ratios[idx] = new;
+        let neighbor = if idx < 2 { idx + 1 } else { idx - 1 };
+        let n_old = self.column_ratios[neighbor];
+        let n_new = (n_old as i16 - diff).clamp(5, 80) as u16;
+        let adjust = n_new as i16 - n_old as i16;
+        self.column_ratios[neighbor] = n_new;
+        let third = 3 - idx - neighbor;
+        self.column_ratios[third] =
+            ((self.column_ratios[third] as i16 - adjust) as i16).clamp(5, 80) as u16;
+        let sum: u16 = self.column_ratios.iter().sum();
+        if sum != 100 {
+            let diff = 100i16 - sum as i16;
+            let target = if diff > 0 { third } else { neighbor };
+            self.column_ratios[target] =
+                (self.column_ratios[target] as i16 + diff).clamp(5, 80) as u16;
+        }
+    }
+
+    fn gutter_positions(&self) -> [[u16; 2]; 2] {
+        let w = self.term_width.max(1);
+        let g0 = w * self.column_ratios[0] / 100;
+        let g1 = w * (self.column_ratios[0] + self.column_ratios[1]) / 100;
+        [
+            [g0.saturating_sub(1), g0.saturating_add(1)],
+            [g1.saturating_sub(1), g1.saturating_add(1)],
+        ]
+    }
+
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        let col = event.column;
+        let row = event.row;
+        let main_top = 3u16;
+        let main_bot = self.term_height.saturating_sub(5);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if row < main_top || row >= main_bot {
+                    return;
+                }
+                for (i, &[lo, hi]) in self.gutter_positions().iter().enumerate() {
+                    if col >= lo && col <= hi {
+                        self.dragging_gutter = Some(i);
+                        return;
+                    }
+                }
+                // Click in non-gutter area → set focus or toggle poster
+                let w = self.term_width.max(1);
+                let g1 = w * (self.column_ratios[0] + self.column_ratios[1]) / 100;
+                if col > g1 {
+                    self.focus = Focus::Details;
+                    self.show_full_poster = !self.show_full_poster;
+                } else if col < w * self.column_ratios[0] / 100 {
+                    self.focus = Focus::Categories;
+                } else {
+                    self.focus = Focus::Movies;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(idx) = self.dragging_gutter {
+                    let w = self.term_width.max(1);
+                    let pct = (col as f32 / w as f32 * 100.0).round() as u16;
+                    let pct = pct.clamp(5, 95);
+                    if idx == 0 {
+                        let new_cat =
+                            pct.min(100u16.saturating_sub(self.column_ratios[2] + 5).min(80));
+                        let remaining = 100 - new_cat;
+                        let new_det = self.column_ratios[2].clamp(5, remaining.saturating_sub(5));
+                        let new_mov = remaining - new_det;
+                        if new_mov >= 5 && new_cat >= 5 {
+                            self.column_ratios = [new_cat, new_mov, new_det];
+                        }
+                    } else {
+                        let cat = self.column_ratios[0];
+                        let new_cat_mov = pct.max(cat + 5).min(95);
+                        let new_mov = new_cat_mov - cat;
+                        let new_det = (100 - cat - new_mov).clamp(5, 80);
+                        let new_mov = (100 - cat - new_det).clamp(5, 80);
+                        if new_mov >= 5 && new_det >= 5 {
+                            self.column_ratios = [cat, new_mov, new_det];
+                        }
+                    }
+                }
+            }
+            MouseEventKind::Up(_) => {
+                self.dragging_gutter = None;
+            }
+            _ => {}
+        }
     }
 }

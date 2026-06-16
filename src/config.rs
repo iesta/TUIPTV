@@ -17,6 +17,17 @@ impl Config {
             self.password
         )
     }
+
+    pub fn stream_url(&self, stream_id: i64, ext: &str) -> String {
+        format!(
+            "{}/movie/{}/{}/{}.{}",
+            self.url.trim_end_matches('/'),
+            self.username,
+            self.password,
+            stream_id,
+            ext
+        )
+    }
 }
 
 pub fn load_env() -> Result<Option<Config>> {

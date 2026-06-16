@@ -5,24 +5,45 @@ mod db;
 mod ui;
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::crossterm::ExecutableCommand;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::{stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let font_size = match crossterm::terminal::window_size() {
+        Ok(ws) if ws.width > 0 && ws.columns > 0 && ws.height > 0 && ws.rows > 0 => {
+            let fw = (ws.width / ws.columns).max(4);
+            let fh = (ws.height / ws.rows).max(4);
+            (fw, fh)
+        }
+        _ => (8, 16),
+    };
+
     let mut app = app::App::new()?;
+    app.font_size = font_size;
+    app.picker = ratatui_image::picker::Picker::new(font_size);
+
+    let (w, h) = size()?;
+    app.term_width = w;
+    app.term_height = h;
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(ratatui::crossterm::event::EnableBracketedPaste)?;
+    stdout().execute(EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+
+    app.picker.guess_protocol();
 
     let ctrlc_flag = Arc::new(AtomicBool::new(false));
     let ctrlc = ctrlc_flag.clone();
@@ -33,10 +54,12 @@ async fn main() -> Result<()> {
     });
 
     let res = run(&mut terminal, &mut app, ctrlc_flag).await;
+    app.save_layout();
 
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
     stdout().execute(ratatui::crossterm::event::DisableBracketedPaste)?;
+    stdout().execute(DisableMouseCapture)?;
     terminal.show_cursor()?;
     stdout().flush()?;
 
@@ -53,6 +76,7 @@ async fn run(
             return Ok(());
         }
 
+        app.drain_posters();
         if app.drain_logs() {
             app.load_categories();
             let n_cats = app.categories.len();
@@ -74,23 +98,44 @@ async fn run(
         }
         terminal.draw(|f| ui::render::draw(f, app))?;
 
-        let event = event::read()?;
-        match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    return Ok(());
+        if event::poll(Duration::from_millis(50))? {
+            let ev = event::read()?;
+            match ev {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        return Ok(());
+                    }
+                    if key.code == KeyCode::Char('d')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        app.show_logs = !app.show_logs;
+                        continue;
+                    }
+                    if key.code == KeyCode::Char('r')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !app.show_config
+                    {
+                        app.sync();
+                        continue;
+                    }
+                    if !app.handle_event(key.code) {
+                        return Ok(());
+                    }
                 }
-                if !app.handle_event(key.code) {
-                    return Ok(());
+                Event::Mouse(m) => {
+                    app.handle_mouse(m);
                 }
-                if key.code == KeyCode::Char('r') && !app.show_config {
-                    app.sync();
+                Event::Resize(w, h) => {
+                    app.term_width = w;
+                    app.term_height = h;
                 }
+                Event::Paste(text) => {
+                    app.handle_paste(&text);
+                }
+                _ => {}
             }
-            Event::Paste(text) => {
-                app.handle_paste(&text);
-            }
-            _ => {}
         }
     }
 }

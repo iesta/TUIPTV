@@ -22,6 +22,8 @@ pub struct XtreamMovie {
     pub release_date: Option<String>,
     pub plot: Option<String>,
     pub num: Option<i64>,
+    #[serde(default)]
+    pub genre: Option<String>,
 }
 
 fn parse_category_id<'de, D>(d: D) -> Result<String, D::Error>
@@ -67,8 +69,8 @@ pub async fn sync_vod_streams(config: &Config, db: &Database) -> Result<usize> {
     let conn = db.conn.lock().unwrap();
     conn.execute_batch("BEGIN")?;
     let mut stmt = conn.prepare(
-        "INSERT OR REPLACE INTO movies (id, name, category_id, stream_id, container_extension, stream_icon, rating, release_date, plot)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT OR REPLACE INTO movies (id, name, category_id, stream_id, container_extension, stream_icon, rating, release_date, plot, genre)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for m in &streams {
         let id = m.stream_id.unwrap_or(0);
@@ -82,7 +84,8 @@ pub async fn sync_vod_streams(config: &Config, db: &Database) -> Result<usize> {
             m.stream_icon,
             m.rating,
             m.release_date,
-            m.plot
+            m.plot,
+            m.genre,
         ])?;
     }
     conn.execute_batch("COMMIT")?;
