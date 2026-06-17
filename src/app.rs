@@ -1202,6 +1202,10 @@ pub fn drain_posters(&mut self) {
         if self.movie_sort != 0 {
             self.apply_movie_sort();
         }
+        if let Some(&pos) = self.cat_scroll_pos.get(&category_id) {
+            let max = self.movies.len().saturating_sub(1);
+            self.movie_offset = pos.min(max);
+        }
         if self.focus == Focus::Movies {
             self.load_current_poster();
         }
