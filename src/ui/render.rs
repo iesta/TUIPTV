@@ -41,7 +41,7 @@ fn categories_pane(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(if focussed {
             Style::default().bg(Color::White).fg(Color::Black)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::LightBlue)
         });
     let mut state = ratatui::widgets::ListState::default();
     if app.category_offset < app.categories.len() {
@@ -100,7 +100,7 @@ fn movies_pane(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(if focussed {
             Style::default().bg(Color::White).fg(Color::Black)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(Color::LightBlue)
         });
     let mut state = ratatui::widgets::ListState::default();
     if app.movie_offset < movies.len() {
