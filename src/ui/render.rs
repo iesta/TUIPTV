@@ -103,7 +103,7 @@ fn movies_pane(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::LightBlue)
         });
     let mut state = ratatui::widgets::ListState::default();
-    if app.movie_offset < movies.len() {
+    if focussed && app.movie_offset < movies.len() {
         state.select(Some(app.movie_offset));
     }
     let visible = inner.height as usize;
@@ -141,19 +141,17 @@ fn movies_pane(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn details_pane(frame: &mut Frame, area: Rect, app: &App) {
-    let title = if app.focus == Focus::Details {
-        " Details (focused) "
-    } else {
-        " Details "
-    };
+    if app.focus != Focus::Movies {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Details ");
+        frame.render_widget(block, area);
+        return;
+    }
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
-        .border_style(if app.focus == Focus::Details {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        });
+        .title(" Details ")
+        .border_style(Style::default().fg(Color::Yellow));
 
     frame.render_widget(&block, area);
     let inner = block.inner(area);

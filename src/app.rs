@@ -691,21 +691,30 @@ pub fn drain_posters(&mut self) {
             KeyCode::Char('l') | KeyCode::Right => {
                 if self.focus == Focus::Categories {
                     self.focus = Focus::Movies;
+                    self.load_current_poster();
                 }
             }
             KeyCode::Tab => {
+                let prev = self.focus;
                 self.focus = if self.focus == Focus::Categories {
                     Focus::Movies
                 } else {
                     Focus::Categories
                 };
+                if prev == Focus::Categories && self.focus == Focus::Movies {
+                    self.load_current_poster();
+                }
             }
             KeyCode::BackTab => {
+                let prev = self.focus;
                 self.focus = if self.focus == Focus::Movies {
                     Focus::Categories
                 } else {
                     Focus::Movies
                 };
+                if prev == Focus::Categories && self.focus == Focus::Movies {
+                    self.load_current_poster();
+                }
             }
             KeyCode::Char('(') => self.resize_focused(-3),
             KeyCode::Char(')') => self.resize_focused(3),
@@ -728,6 +737,7 @@ pub fn drain_posters(&mut self) {
                 if let Some(cat) = self.categories.get(self.category_offset) {
                     self.load_movies(cat.id);
                     self.focus = Focus::Movies;
+                    self.load_current_poster();
                 }
             }
             KeyCode::Char('r') => self.sort_movies_by_rating(),
@@ -1189,13 +1199,12 @@ pub fn drain_posters(&mut self) {
                 self.movies.push(row);
             }
         }
-        if let Some(&pos) = self.cat_scroll_pos.get(&category_id) {
-            self.movie_offset = pos.min(self.movies.len().saturating_sub(1));
-        }
         if self.movie_sort != 0 {
             self.apply_movie_sort();
         }
-        self.load_current_poster();
+        if self.focus == Focus::Movies {
+            self.load_current_poster();
+        }
     }
 
     pub fn sync(&mut self) {
@@ -1288,6 +1297,7 @@ pub fn drain_posters(&mut self) {
                     self.focus = Focus::Categories;
                 } else {
                     self.focus = Focus::Movies;
+                    self.load_current_poster();
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
