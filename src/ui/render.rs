@@ -238,6 +238,7 @@ q         quit
 Ctrl+R    sync data from server
 i         toggle poster images
 r         sort movies by rating (toggle)
+a         sort movies by name (toggle)
 y         sort movies by year (toggle)
 o         reset to default order
 c         cycle category order

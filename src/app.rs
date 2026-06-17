@@ -214,10 +214,17 @@ impl App {
                 let n_cats = s.categories.len();
                 if n_cats > 0 {
                     let saved_offset = s.movie_offset;
-                    // Restore last-selected category if still present in the list
+                    // Restore last-selected category, or wishlist, or first
                     let target = s
                         .selected_category
                         .filter(|&id| s.categories.iter().any(|c| c.id == id))
+                        .or_else(|| {
+                            if !s.wishlist.is_empty() {
+                                Some(-1)
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or(s.categories[0].id);
                     s.load_movies(target);
                     let n_movies = s.movies.len();
@@ -741,6 +748,7 @@ pub fn drain_posters(&mut self) {
                 }
             }
             KeyCode::Char('r') => self.sort_movies_by_rating(),
+            KeyCode::Char('a') => self.sort_movies_by_name(),
             KeyCode::Char('i') => {
                 self.show_posters = !self.show_posters;
                 self.load_current_poster();
@@ -848,6 +856,8 @@ pub fn drain_posters(&mut self) {
                     ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
+            5 => self.movies.sort_by(|a, b| a.name.cmp(&b.name)),
+            6 => self.movies.sort_by(|a, b| b.name.cmp(&a.name)),
             _ => {}
         }
         if let Some(id) = current_id {
@@ -885,6 +895,22 @@ pub fn drain_posters(&mut self) {
         let label = match self.movie_sort {
             3 => "rating ↓",
             4 => "rating ↑",
+            _ => "default",
+        };
+        self.status = format!("sorted by {label}");
+        self.log_tx.send(format!("sort: {label}")).ok();
+        self.apply_movie_sort();
+    }
+
+    fn sort_movies_by_name(&mut self) {
+        self.movie_sort = match self.movie_sort {
+            0 | 6 => 5,
+            5 => 6,
+            _ => 5,
+        };
+        let label = match self.movie_sort {
+            5 => "name ↑",
+            6 => "name ↓",
             _ => "default",
         };
         self.status = format!("sorted by {label}");
