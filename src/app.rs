@@ -865,7 +865,9 @@ pub fn drain_posters(&mut self) {
                 self.movie_offset = pos;
             }
         }
-        self.load_current_poster();
+        if self.focus == Focus::Movies {
+            self.load_current_poster();
+        }
     }
 
     fn sort_movies_by_year(&mut self) {
