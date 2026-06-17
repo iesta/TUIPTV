@@ -1,6 +1,8 @@
-# tuiptv
+# tuiptv v0.2
 
 A terminal-based IPTV media browser for VOD (Video on Demand) catalogs using the Xtream Codes API. Browse movies, view posters, filter, and launch streams in VLC — all from your terminal.
+
+![screenshot](tuiptv.png)
 
 ## Features
 
@@ -11,10 +13,12 @@ A terminal-based IPTV media browser for VOD (Video on Demand) catalogs using the
 - **Filter** movies with `/` — regex or substring matching, case-insensitive
 - **Launch VLC** directly from the TUI with `v`
 - **Full-screen poster** with `f`
+- **Statistics panel** with `h`
 - **Sync** data from server with `Ctrl+R`
 - **Help screen** with `?`
 - **Disk cache** for poster images (persistent across restarts)
 - **In-memory image cache** for instant revisit (50-entry LRU)
+- **Persistence** — remembers last category, movie, column widths, sort mode across restarts
 
 ## Key Bindings
 
@@ -24,7 +28,8 @@ A terminal-based IPTV media browser for VOD (Video on Demand) catalogs using the
 | `k` / `Up` | Scroll up |
 | `gg` | Go to beginning of list |
 | `G` | Go to end of list |
-| `h` / `Left` | Focus categories pane |
+| `h` | Toggle statistics panel |
+| `Left` | Focus categories pane |
 | `l` / `Right` | Focus movies pane |
 | `Tab` / `BackTab` | Toggle focus between panes |
 | `Enter` | Select category (load movies, focus movies pane) |
@@ -43,11 +48,11 @@ A terminal-based IPTV media browser for VOD (Video on Demand) catalogs using the
 | `L` | Reload poster from disk cache |
 | `Ctrl+D` | Toggle log window |
 | `(` / `)` | Shrink / grow focused column |
-| `/` | Filter movies (regex) |
+| `/` | Filter movies (regex, case-insensitive) |
 | `Esc` | Exit filter mode (clears query) |
 | `Enter` | Exit filter mode (keeps filter applied) |
 | `?` | Toggle help screen |
-| Mouse | Click to focus / toggle poster, drag gutters to resize |
+| Mouse | Click to toggle poster / set focus, drag gutters to resize |
 
 ## Getting Started
 
@@ -74,7 +79,7 @@ Or run the app — it will show a configuration form on first launch if `.env` i
 cargo run --release
 ```
 
-Press `r` to sync the movie catalog from your provider, then browse with `j`/`k`.
+Press `Ctrl+R` to sync the movie catalog from your provider, then browse with `j`/`k`.
 
 ### Terminal Support
 
@@ -83,8 +88,8 @@ Poster images work best with terminals supporting the **Kitty** protocol (Kitty 
 ## Data
 
 - **SQLite database** (`iptv_cache.db`) — stores categories, movies, wishlist
-- **Poster cache** (`poster_cache/`) — JPEG files keyed by URL hash
-- **Layout preferences** (`iptv_layout.dat`) — column widths, sort modes, last-selected category
+- **Poster cache** (`poster_cache/`) — JPEG files keyed by URL hash, ~250KB each
+- **Layout preferences** (`iptv_layout.dat`) — column widths, sort modes, last-selected category and movie
 
 ## Build
 

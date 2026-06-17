@@ -9,7 +9,7 @@ use ratatui_image::{Resize, StatefulImage};
 fn top_bar(frame: &mut Frame, area: Rect, _app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" tuiptv v0.1.0 ")
+        .title(" tuiptv v0.2.0 ")
         .style(Style::default().fg(Color::Cyan));
     frame.render_widget(block, area);
 }
