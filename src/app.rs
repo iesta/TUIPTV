@@ -123,6 +123,7 @@ pub struct App {
     pub filtered_movies: Vec<MovieItem>,
     pub pending_g: bool,
     pub wishlist: HashSet<i64>,
+    pub show_stats: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +213,7 @@ impl App {
                     filtered_movies: Vec::new(),
                     pending_g: false,
                     wishlist: HashSet::new(),
+                    show_stats: false,
                 };
                 s.load_layout();
                 if let Some(ref db) = s.db {
@@ -295,6 +297,7 @@ impl App {
                     filtered_movies: Vec::new(),
                     pending_g: false,
                     wishlist: HashSet::new(),
+                    show_stats: false,
                 })
             }
         }
@@ -628,6 +631,12 @@ pub fn drain_posters(&mut self) {
             self.show_full_poster = false;
             return true;
         }
+        if self.show_stats {
+            if key == KeyCode::Char('h') || key == KeyCode::Esc {
+                self.show_stats = false;
+            }
+            return true;
+        }
         if self.show_filter && self.focus == Focus::Movies {
             match key {
                 KeyCode::Esc => {
@@ -690,7 +699,8 @@ pub fn drain_posters(&mut self) {
         }
         match key {
             KeyCode::Char('q') => return false,
-            KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('h') => self.show_stats = !self.show_stats,
+            KeyCode::Left => {
                 if self.focus == Focus::Movies {
                     self.focus = Focus::Categories;
                 }

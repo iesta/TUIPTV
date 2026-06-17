@@ -229,7 +229,8 @@ j / Down  scroll down
 k / Up    scroll up
 gg        go to beginning of list
 G         go to end of list
-h / Left  focus pane left
+h         toggle statistics
+Left      focus pane left
 l / Right focus pane right
 Tab       focus next pane
 BackTab   focus previous pane
@@ -257,6 +258,50 @@ Mouse     click: focus & toggle poster, drag gutters resize";
     };
     frame.render_widget(Clear, help_area);
     frame.render_widget(paragraph, help_area);
+}
+
+fn stats_screen(frame: &mut Frame, area: Rect, app: &App) {
+    let total_movies: usize = app.movies.len();
+    let total_wish = app.wishlist.len();
+    let total_cat = app.categories.len();
+    let mut years: Vec<i32> = app.movies.iter().filter_map(|m| m.year).collect();
+    years.sort();
+    years.dedup();
+    let year_range = if years.is_empty() {
+        "N/A".to_string()
+    } else {
+        format!("{} – {}", years.first().unwrap(), years.last().unwrap())
+    };
+    let mut year_lines = String::new();
+    for y in years.iter().rev().take(10) {
+        let count = app.movies.iter().filter(|m| m.year == Some(*y)).count();
+        year_lines.push_str(&format!("  {y}: {count}\n"));
+    }
+
+    let text = format!(
+        "\
+Categories: {total_cat}
+Movies:     {total_movies}
+Wishlist:   ❤️ {total_wish}
+Year range: {year_range}
+
+Years:
+{year_lines}
+Esc / h  close"
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Statistics ")
+        .style(Style::default().fg(Color::Cyan));
+    let paragraph = Paragraph::new(text).block(block);
+    let [stats_area] = *Layout::vertical([Constraint::Min(0)])
+        .margin(4)
+        .split(area)
+    else {
+        return;
+    };
+    frame.render_widget(Clear, stats_area);
+    frame.render_widget(paragraph, stats_area);
 }
 
 fn log_pane(frame: &mut Frame, area: Rect, app: &App) {
@@ -336,5 +381,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     if app.show_help {
         help_screen(frame, frame.area());
+    }
+    if app.show_stats {
+        stats_screen(frame, frame.area(), app);
     }
 }
