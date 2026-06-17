@@ -224,6 +224,7 @@ impl App {
                     if saved_offset < n_movies {
                         s.movie_offset = saved_offset;
                     }
+                    s.load_current_poster();
                     s.status = format!("{n_cats} categories, {n_movies} movies");
                     s.log_tx
                         .send(format!("loaded {n_cats} categories, {n_movies} movies"))
