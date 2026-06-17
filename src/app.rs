@@ -27,6 +27,13 @@ fn is_printable(c: char) -> bool {
     c.is_ascii_graphic() || c == ' '
 }
 
+fn sort_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
 fn parse_movie_tags(name: &str) -> (Option<String>, Option<String>, Option<String>, Option<i32>) {
     let upper = name.to_uppercase();
     let mut version = None;
@@ -819,7 +826,7 @@ pub fn drain_posters(&mut self) {
         }
         let current_id = self.movies.get(self.movie_offset).map(|m| m.id);
         match self.movie_sort {
-            0 => self.movies.sort_by(|a, b| a.name.cmp(&b.name)),
+            0 => self.movies.sort_by(|a, b| sort_name(&a.name).cmp(&sort_name(&b.name))),
             1 => self.movies.sort_by(|a, b| b.year.cmp(&a.year)),
             2 => self.movies.sort_by(|a, b| a.year.cmp(&b.year)),
             3 => {
@@ -856,8 +863,8 @@ pub fn drain_posters(&mut self) {
                     ra.partial_cmp(&rb).unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
-            5 => self.movies.sort_by(|a, b| a.name.cmp(&b.name)),
-            6 => self.movies.sort_by(|a, b| b.name.cmp(&a.name)),
+            5 => self.movies.sort_by(|a, b| sort_name(&a.name).cmp(&sort_name(&b.name))),
+            6 => self.movies.sort_by(|a, b| sort_name(&b.name).cmp(&sort_name(&a.name))),
             _ => {}
         }
         if let Some(id) = current_id {
@@ -872,9 +879,8 @@ pub fn drain_posters(&mut self) {
 
     fn sort_movies_by_year(&mut self) {
         self.movie_sort = match self.movie_sort {
-            0 => 1,
+            0 | 2 => 1,
             1 => 2,
-            2 => 0,
             _ => 1,
         };
         let label = match self.movie_sort {
