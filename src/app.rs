@@ -504,11 +504,11 @@ pub fn drain_posters(&mut self) {
     }
 
     fn load_current_poster(&mut self) {
-        // Clear old poster — bytes already cached by drain_posters
-        self.poster_protocol.replace(None);
+        // Don't clear old poster — keep it visible until new one is ready
         self.current_poster_url.take();
 
         if !self.show_posters {
+            self.poster_protocol.replace(None);
             self.poster_loading = false;
             return;
         }
@@ -523,22 +523,14 @@ pub fn drain_posters(&mut self) {
         let url = match url {
             Some(u) => u,
             None => {
+                self.poster_protocol.replace(None);
                 self.poster_loading = false;
                 self.poster_debug = "no image".into();
                 return;
             }
         };
 
-        let from_disk = std::fs::metadata(format!("poster_cache/{:016x}", hash_url(&url))).is_ok();
-        self.poster_debug = if self.poster_img_cache.contains_key(&url) {
-            "img cache".into()
-        } else if from_disk {
-            "disk".into()
-        } else {
-            "http".into()
-        };
-
-        // Image cache hit — create fresh protocol on main thread (fast, no decode)
+        // Memory cache hit — instant, no blocking
         if let Some(img) = self.poster_img_cache.get(&url) {
             let protocol = self.picker.new_resize_protocol(img.clone());
             self.poster_protocol.replace(Some(protocol));
@@ -547,12 +539,13 @@ pub fn drain_posters(&mut self) {
             return;
         }
 
-        self.log_tx.send(format!("poster: {}", self.poster_debug)).ok();
-
         self.current_poster_url = Some(url.clone());
-        if from_disk {
+        let cache_path = format!("poster_cache/{:016x}", hash_url(&url));
+        if std::fs::metadata(&cache_path).is_ok() {
+            self.poster_debug = "disk".into();
             self.load_poster_fast(&url);
         } else {
+            self.poster_debug = "http".into();
             self.load_poster(&url);
         }
     }
