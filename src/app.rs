@@ -768,6 +768,17 @@ pub fn drain_posters(&mut self) {
                     self.load_movies(-1);
                 }
             }
+            KeyCode::Char('L') => {
+                // Force re-load poster from disk cache
+                let url = self.active_movies().get(self.movie_offset)
+                    .and_then(|m| m.stream_icon.as_ref())
+                    .filter(|u| !u.is_empty())
+                    .cloned();
+                if let Some(ref u) = url {
+                    self.poster_img_cache.remove(u);
+                }
+                self.load_current_poster();
+            }
             KeyCode::Char('o') => {
                 self.movie_sort = 0;
                 self.apply_movie_sort();
