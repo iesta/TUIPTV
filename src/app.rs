@@ -213,9 +213,17 @@ impl App {
                 s.load_categories();
                 let n_cats = s.categories.len();
                 if n_cats > 0 {
-                    let first = s.categories[0].id;
-                    s.load_movies(first);
+                    let saved_offset = s.movie_offset;
+                    // Restore last-selected category if still present in the list
+                    let target = s
+                        .selected_category
+                        .filter(|&id| s.categories.iter().any(|c| c.id == id))
+                        .unwrap_or(s.categories[0].id);
+                    s.load_movies(target);
                     let n_movies = s.movies.len();
+                    if saved_offset < n_movies {
+                        s.movie_offset = saved_offset;
+                    }
                     s.status = format!("{n_cats} categories, {n_movies} movies");
                     s.log_tx
                         .send(format!("loaded {n_cats} categories, {n_movies} movies"))
@@ -536,13 +544,15 @@ pub fn drain_posters(&mut self) {
 
     pub fn save_layout(&self) {
         let s = format!(
-            "{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{}",
             self.column_ratios[0],
             self.column_ratios[1],
             self.column_ratios[2],
             self.show_logs as u8,
             self.cat_sort_mode,
             self.movie_sort,
+            self.selected_category.unwrap_or(-2),
+            self.movie_offset,
         );
         let _ = std::fs::write("iptv_layout.dat", s);
     }
@@ -566,6 +576,15 @@ pub fn drain_posters(&mut self) {
                 }
                 if parts.len() >= 6 {
                     self.movie_sort = parts[5].parse().unwrap_or(0);
+                }
+                if parts.len() >= 7 {
+                    let cat: i64 = parts[6].parse().unwrap_or(-2);
+                    if cat >= -1 {
+                        self.selected_category = Some(cat);
+                    }
+                }
+                if parts.len() >= 8 {
+                    self.movie_offset = parts[7].parse().unwrap_or(0);
                 }
             }
         }

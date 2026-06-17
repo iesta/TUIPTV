@@ -233,6 +233,7 @@ r         sort movies by rating (toggle)
 y         sort movies by year (toggle)
 o         reset to default order
 c         cycle category order
+w         jump to wishlist
 v         open in VLC
 f         full-size poster
 Space     toggle wishlist

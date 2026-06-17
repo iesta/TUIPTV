@@ -98,6 +98,7 @@ async fn run(
         }
         terminal.draw(|f| ui::render::draw(f, app))?;
 
+        app.drain_posters();
         if event::poll(Duration::from_millis(50))? {
             let ev = event::read()?;
             match ev {
