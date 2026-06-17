@@ -684,31 +684,27 @@ pub fn drain_posters(&mut self) {
         match key {
             KeyCode::Char('q') => return false,
             KeyCode::Char('h') | KeyCode::Left => {
-                self.focus = match self.focus {
-                    Focus::Movies => Focus::Categories,
-                    Focus::Details => Focus::Movies,
-                    other => other,
-                };
+                if self.focus == Focus::Movies {
+                    self.focus = Focus::Categories;
+                }
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                self.focus = match self.focus {
-                    Focus::Categories => Focus::Movies,
-                    Focus::Movies => Focus::Details,
-                    other => other,
-                };
+                if self.focus == Focus::Categories {
+                    self.focus = Focus::Movies;
+                }
             }
             KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Categories => Focus::Movies,
-                    Focus::Movies => Focus::Details,
-                    Focus::Details => Focus::Categories,
+                self.focus = if self.focus == Focus::Categories {
+                    Focus::Movies
+                } else {
+                    Focus::Categories
                 };
             }
             KeyCode::BackTab => {
-                self.focus = match self.focus {
-                    Focus::Categories => Focus::Details,
-                    Focus::Movies => Focus::Categories,
-                    Focus::Details => Focus::Movies,
+                self.focus = if self.focus == Focus::Movies {
+                    Focus::Categories
+                } else {
+                    Focus::Movies
                 };
             }
             KeyCode::Char('(') => self.resize_focused(-3),
@@ -1287,7 +1283,6 @@ pub fn drain_posters(&mut self) {
                 let w = self.term_width.max(1);
                 let g1 = w * (self.column_ratios[0] + self.column_ratios[1]) / 100;
                 if col > g1 {
-                    self.focus = Focus::Details;
                     self.show_full_poster = !self.show_full_poster;
                 } else if col < w * self.column_ratios[0] / 100 {
                     self.focus = Focus::Categories;

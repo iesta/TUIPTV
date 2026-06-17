@@ -1,6 +1,6 @@
 use crate::app::{App, Focus};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
@@ -16,7 +16,8 @@ fn top_bar(frame: &mut Frame, area: Rect, _app: &App) {
 
 fn categories_pane(frame: &mut Frame, area: Rect, app: &App) {
     let total = app.categories.len();
-    let title = if app.focus == Focus::Categories {
+    let focussed = app.focus == Focus::Categories;
+    let title = if focussed {
         format!(" Categories ({total}) (focused) ")
     } else {
         format!(" Categories ({total}) ")
@@ -24,7 +25,7 @@ fn categories_pane(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(if app.focus == Focus::Categories {
+        .border_style(if focussed {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
@@ -37,7 +38,11 @@ fn categories_pane(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(if focussed {
+            Style::default().bg(Color::White).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        });
     let mut state = ratatui::widgets::ListState::default();
     if app.category_offset < app.categories.len() {
         state.select(Some(app.category_offset));
@@ -58,12 +63,13 @@ fn movies_pane(frame: &mut Frame, area: Rect, app: &App) {
     let movies = app.active_movies();
     let total = app.movies.len();
     let shown = movies.len();
+    let focussed = app.focus == Focus::Movies;
     let title = if app.show_filter {
         format!(" Movies ({shown}/{total}) ")
     } else {
         format!(" Movies ({total}) ")
     };
-    let title = if app.focus == Focus::Movies {
+    let title = if focussed {
         format!("{title}(focused) ")
     } else {
         title
@@ -71,7 +77,7 @@ fn movies_pane(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(if app.focus == Focus::Movies {
+        .border_style(if focussed {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
@@ -91,7 +97,11 @@ fn movies_pane(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(if focussed {
+            Style::default().bg(Color::White).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        });
     let mut state = ratatui::widgets::ListState::default();
     if app.movie_offset < movies.len() {
         state.select(Some(app.movie_offset));
