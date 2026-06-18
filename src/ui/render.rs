@@ -2,7 +2,7 @@ use crate::app::{App, Focus};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 use ratatui_image::{Resize, StatefulImage};
 
@@ -137,6 +137,128 @@ fn movies_pane(frame: &mut Frame, area: Rect, app: &App) {
                 bar_area,
             );
         }
+    }
+}
+
+fn movies_table_pane(frame: &mut Frame, area: Rect, app: &App) {
+    let movies = app.active_movies();
+    let total = app.movies.len();
+    let shown = movies.len();
+    let focussed = app.focus == Focus::Movies;
+    let title = if app.show_filter {
+        format!(" Movies ({shown}/{total}) (table) ")
+    } else {
+        format!(" Movies ({total}) (table) ")
+    };
+    let title = if focussed {
+        format!("{title}(focused) ")
+    } else {
+        title
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(if focussed {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default()
+        });
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let visible_rows = inner.height as usize;
+    let selected = if app.movie_offset < movies.len() {
+        app.movie_offset
+    } else {
+        0
+    };
+    let offset = if movies.len() <= visible_rows {
+        0
+    } else {
+        let half = visible_rows / 2;
+        if selected < half {
+            0
+        } else if selected >= movies.len().saturating_sub(half) {
+            movies.len().saturating_sub(visible_rows)
+        } else {
+            selected.saturating_sub(half)
+        }
+    };
+
+    let rows: Vec<Row> = movies
+        .iter()
+        .skip(offset)
+        .take(visible_rows)
+        .map(|m| {
+            let wishlist = app.wishlist.contains(&m.id);
+            let name_cell = if wishlist {
+                format!("★ {}", m.name)
+            } else {
+                m.name.clone()
+            };
+            let year_cell = m
+                .year
+                .map(|y| y.to_string())
+                .unwrap_or_else(|| "—".to_string());
+            let rating_cell = m
+                .rating
+                .clone()
+                .unwrap_or_else(|| "—".to_string());
+            let genre_cell = m
+                .genre
+                .clone()
+                .unwrap_or_else(|| "—".to_string());
+            Row::new(vec![
+                Cell::from(name_cell),
+                Cell::from(year_cell),
+                Cell::from(rating_cell),
+                Cell::from(genre_cell),
+            ])
+        })
+        .collect();
+
+    let header = Row::new(vec![
+        Cell::from("Name").style(Style::default().fg(Color::Cyan)),
+        Cell::from("Year").style(Style::default().fg(Color::Cyan)),
+        Cell::from("Rating").style(Style::default().fg(Color::Cyan)),
+        Cell::from("Genre").style(Style::default().fg(Color::Cyan)),
+    ])
+    .height(1);
+
+    let widths = [
+        Constraint::Min(20),
+        Constraint::Length(6),
+        Constraint::Length(8),
+        Constraint::Length(15),
+    ];
+
+    let mut state = TableState::default();
+    state.select(Some(selected.saturating_sub(offset)));
+
+    let highlight_style = if focussed {
+        Style::default().bg(Color::White).fg(Color::Black)
+    } else {
+        Style::default().fg(Color::LightBlue)
+    };
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(highlight_style)
+        .highlight_symbol("> ");
+    frame.render_stateful_widget(table, inner, &mut state);
+
+    if app.show_filter {
+        let bar = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        };
+        let text = format!("/ {}", app.filter_query);
+        frame.render_widget(
+            Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
+            bar,
+        );
     }
 }
 
@@ -359,22 +481,37 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     top_bar(frame, top, app);
 
-    let [cat, mov, det] = *Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(app.column_ratios[0]),
-            Constraint::Percentage(app.column_ratios[1]),
-            Constraint::Percentage(app.column_ratios[2]),
-        ])
-        .split(main)
-    else {
-        return;
-    };
-
-    categories_pane(frame, cat, app);
-    movies_pane(frame, mov, app);
-    details_pane(frame, det, app);
-    log_pane(frame, logs, app);
+    if app.table_mode {
+        let [cat, mov] = *Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(20),
+                Constraint::Percentage(80),
+            ])
+            .split(main)
+        else {
+            return;
+        };
+        categories_pane(frame, cat, app);
+        movies_table_pane(frame, mov, app);
+        log_pane(frame, logs, app);
+    } else {
+        let [cat, mov, det] = *Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(app.column_ratios[0]),
+                Constraint::Percentage(app.column_ratios[1]),
+                Constraint::Percentage(app.column_ratios[2]),
+            ])
+            .split(main)
+        else {
+            return;
+        };
+        categories_pane(frame, cat, app);
+        movies_pane(frame, mov, app);
+        details_pane(frame, det, app);
+        log_pane(frame, logs, app);
+    }
 
     if app.show_help {
         help_screen(frame, frame.area());

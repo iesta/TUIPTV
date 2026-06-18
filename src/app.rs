@@ -189,6 +189,7 @@ pub struct App {
     pub stats_total_movies: usize,
     pub stats_years: Vec<(i32, usize)>,
     pub pending_url: Option<(String, u64)>,
+    pub table_mode: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +286,7 @@ impl App {
                     stats_total_movies: 0,
                     stats_years: Vec::new(),
                     pending_url: None,
+                    table_mode: false,
                 };
                 s.load_layout();
                 if let Some(ref db) = s.db {
@@ -364,6 +366,7 @@ if n_cats > 0 {
                     stats_total_movies: 0,
                     stats_years: Vec::new(),
                     pending_url: None,
+                    table_mode: false,
                 })
             }
         }
@@ -616,7 +619,7 @@ pub fn drain_posters(&mut self) {
 
     pub fn save_layout(&self) {
         let s = format!(
-            "{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{}",
             self.column_ratios[0],
             self.column_ratios[1],
             self.column_ratios[2],
@@ -625,6 +628,7 @@ pub fn drain_posters(&mut self) {
             self.movie_sort,
             self.selected_category.unwrap_or(-2),
             self.movie_offset,
+            self.table_mode as u8,
         );
         let _ = std::fs::write("iptv_layout.dat", s);
     }
@@ -657,6 +661,9 @@ pub fn drain_posters(&mut self) {
                 }
                 if parts.len() >= 8 {
                     self.movie_offset = parts[7].parse().unwrap_or(0);
+                }
+                if parts.len() >= 9 {
+                    self.table_mode = parts[8].parse::<u8>().unwrap_or(0) != 0;
                 }
             }
         }
@@ -780,6 +787,12 @@ pub fn drain_posters(&mut self) {
                 if self.focus == Focus::Categories {
                     self.focus = Focus::Movies;
                     self.load_current_poster();
+                } else {
+                    self.table_mode = !self.table_mode;
+                    self.poster_protocol.replace(None);
+                    if !self.table_mode {
+                        self.load_current_poster();
+                    }
                 }
             }
             KeyCode::Tab => {
