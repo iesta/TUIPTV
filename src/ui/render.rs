@@ -180,16 +180,13 @@ fn details_pane(frame: &mut Frame, area: Rect, app: &App) {
         }
 
         let text = format!(
-            "Title: {}\nRating: {}\nYear: {}\nReleased: {}\n{}Genre: {}\nVersion: {}\nAudio: {}\nSubs: {}\nWishlist: {}\n\n{}\n\n[{}]",
+            "Title: {}\nRating: {}\nYear: {}\nGenre: {}\nCast: {}\nDirector: {}\nWishlist: {}\n\n{}\n\n[{}]",
             m.name,
             m.rating.as_deref().unwrap_or("N/A"),
             m.year.map(|y| y.to_string()).as_deref().unwrap_or("N/A"),
-            m.release_date.as_deref().unwrap_or("N/A"),
-            m.container_extension.as_ref().map(|e| format!("Extension: {e}\n")).unwrap_or_default(),
             m.genre.as_deref().unwrap_or("N/A"),
-            m.version.as_deref().unwrap_or("N/A"),
-            m.audio.as_deref().unwrap_or("N/A"),
-            m.subs.as_deref().unwrap_or("N/A"),
+            m.cast.as_deref().unwrap_or("N/A"),
+            m.director.as_deref().unwrap_or("N/A"),
             if app.wishlist.contains(&m.id) { "❤️" } else { "—" },
             m.plot.as_deref().unwrap_or("No plot available."),
             app.poster_debug,
@@ -261,21 +258,21 @@ Mouse     click: focus & toggle poster, drag gutters resize";
 }
 
 fn stats_screen(frame: &mut Frame, area: Rect, app: &App) {
-    let total_movies: usize = app.movies.len();
+    let total_movies: usize = app.stats_total_movies;
     let total_wish = app.wishlist.len();
     let total_cat = app.categories.len();
-    let mut years: Vec<i32> = app.movies.iter().filter_map(|m| m.year).collect();
-    years.sort();
-    years.dedup();
-    let year_range = if years.is_empty() {
+    let year_range = if app.stats_years.is_empty() {
         "N/A".to_string()
     } else {
-        format!("{} – {}", years.first().unwrap(), years.last().unwrap())
+        format!(
+            "{} – {}",
+            app.stats_years.last().map(|(y, _)| y).unwrap(),
+            app.stats_years.first().map(|(y, _)| y).unwrap()
+        )
     };
     let mut year_lines = String::new();
-    for y in years.iter().rev().take(10) {
-        let count = app.movies.iter().filter(|m| m.year == Some(*y)).count();
-        year_lines.push_str(&format!("  {y}: {count}\n"));
+    for (year, count) in app.stats_years.iter().take(10) {
+        year_lines.push_str(&format!("  {year}: {count}\n"));
     }
 
     let text = format!(

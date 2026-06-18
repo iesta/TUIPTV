@@ -92,9 +92,15 @@ async fn run(
                 })
                 .unwrap_or(0);
             app.status = format!("{n_cats} categories, {n_movies} movies");
-            if let Some(first) = app.categories.first().cloned() {
-                app.load_movies(first.id);
+            let target = if !app.wishlist.is_empty() {
+                Some(-1_i64)
+            } else {
+                app.selected_category
+                    .filter(|&id| app.categories.iter().any(|c| c.id == id))
             }
+            .or_else(|| app.categories.first().map(|c| c.id))
+            .unwrap_or(-1);
+            app.load_movies(target);
         }
         terminal.draw(|f| ui::render::draw(f, app))?;
 

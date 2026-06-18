@@ -2,3 +2,4 @@
 .env
 iptv_cache.db
 poster_cache/
+logs/

@@ -28,10 +28,41 @@ fn is_printable(c: char) -> bool {
 }
 
 fn sort_name(name: &str) -> String {
-    name.chars()
+    use unicode_normalization::UnicodeNormalization;
+    name.nfd()
         .filter(|c| c.is_alphanumeric() || c.is_whitespace())
         .flat_map(|c| c.to_lowercase())
         .collect()
+}
+
+fn open_log_file() -> Option<std::fs::File> {
+    std::fs::create_dir_all("logs").ok()?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("logs/tuiptv.log")
+        .ok()
+}
+
+fn extract_year(date: Option<&String>) -> Option<i32> {
+    let s = date?.trim();
+    let bytes = s.as_bytes();
+    for i in 0..bytes.len().saturating_sub(3) {
+        if bytes[i].is_ascii_digit()
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 2].is_ascii_digit()
+            && bytes[i + 3].is_ascii_digit()
+        {
+            let y = (bytes[i] - b'0') as i32 * 1000
+                + (bytes[i + 1] - b'0') as i32 * 100
+                + (bytes[i + 2] - b'0') as i32 * 10
+                + (bytes[i + 3] - b'0') as i32;
+            if (1900..=2099).contains(&y) {
+                return Some(y);
+            }
+        }
+    }
+    None
 }
 
 fn parse_movie_tags(name: &str) -> (Option<String>, Option<String>, Option<String>, Option<i32>) {
@@ -59,14 +90,44 @@ fn parse_movie_tags(name: &str) -> (Option<String>, Option<String>, Option<Strin
             "ENGLISH" | "ANGLAIS" => audio = Some("EN".into()),
             "SUBFRENCH" | "SUBFR" => subs = Some("Sub Fr".into()),
             "SUBBED" | "SUB" => subs = Some("Sub".into()),
-            _ => {
-                if year.is_none() {
-                    if let Ok(y) = token.parse::<i32>() {
-                        if y >= 1900 && y <= 2099 {
-                            year = Some(y);
-                        }
-                    }
-                }
+            _ => {}
+        }
+    }
+
+    let bytes = name.as_bytes();
+    let n = bytes.len();
+    let mut found_paren_year = false;
+    for i in 0..n.saturating_sub(5) {
+        if (bytes[i] == b'(' || bytes[i] == b'[')
+            && bytes[i + 1].is_ascii_digit()
+            && bytes[i + 2].is_ascii_digit()
+            && bytes[i + 3].is_ascii_digit()
+            && bytes[i + 4].is_ascii_digit()
+            && (bytes[i + 5] == b')' || bytes[i + 5] == b']')
+        {
+            let y = (bytes[i + 1] - b'0') as i32 * 1000
+                + (bytes[i + 2] - b'0') as i32 * 100
+                + (bytes[i + 3] - b'0') as i32 * 10
+                + (bytes[i + 4] - b'0') as i32;
+            if (1900..=2099).contains(&y) {
+                year = Some(y);
+                found_paren_year = true;
+            }
+            break;
+        }
+    }
+    if !found_paren_year && n >= 4 {
+        if bytes[n - 4].is_ascii_digit()
+            && bytes[n - 3].is_ascii_digit()
+            && bytes[n - 2].is_ascii_digit()
+            && bytes[n - 1].is_ascii_digit()
+        {
+            let y = (bytes[n - 4] - b'0') as i32 * 1000
+                + (bytes[n - 3] - b'0') as i32 * 100
+                + (bytes[n - 2] - b'0') as i32 * 10
+                + (bytes[n - 1] - b'0') as i32;
+            if (1900..=2099).contains(&y) {
+                year = Some(y);
             }
         }
     }
@@ -96,6 +157,7 @@ pub struct App {
     pub logs: Vec<String>,
     pub log_rx: mpsc::Receiver<String>,
     pub log_tx: mpsc::Sender<String>,
+    pub log_file: Option<std::fs::File>,
     pub syncing: bool,
     pub column_ratios: [u16; 3],
     pub dragging_gutter: Option<usize>,
@@ -124,6 +186,9 @@ pub struct App {
     pub pending_g: bool,
     pub wishlist: HashSet<i64>,
     pub show_stats: bool,
+    pub stats_total_movies: usize,
+    pub stats_years: Vec<(i32, usize)>,
+    pub pending_url: Option<(String, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +207,8 @@ pub struct MovieItem {
     pub plot: Option<String>,
     pub container_extension: Option<String>,
     pub genre: Option<String>,
+    pub cast: Option<String>,
+    pub director: Option<String>,
     pub year: Option<i32>,
     pub version: Option<String>,
     pub audio: Option<String>,
@@ -186,6 +253,7 @@ impl App {
                     logs: Vec::new(),
                     log_rx,
                     log_tx: log_tx.clone(),
+                    log_file: open_log_file(),
                     syncing: false,
                     column_ratios: [20, 45, 35],
                     dragging_gutter: None,
@@ -214,6 +282,9 @@ impl App {
                     pending_g: false,
                     wishlist: HashSet::new(),
                     show_stats: false,
+                    stats_total_movies: 0,
+                    stats_years: Vec::new(),
+                    pending_url: None,
                 };
                 s.load_layout();
                 if let Some(ref db) = s.db {
@@ -221,26 +292,17 @@ impl App {
                 }
                 s.load_categories();
                 let n_cats = s.categories.len();
-                if n_cats > 0 {
-                    let saved_offset = s.movie_offset;
-                    // Restore last-selected category, or wishlist, or first
-                    let target = s
-                        .selected_category
-                        .filter(|&id| s.categories.iter().any(|c| c.id == id))
-                        .or_else(|| {
-                            if !s.wishlist.is_empty() {
-                                Some(-1)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(s.categories[0].id);
-                    s.load_movies(target);
-                    let n_movies = s.movies.len();
-                    if saved_offset < n_movies {
-                        s.movie_offset = saved_offset;
+if n_cats > 0 {
+                    let target = if !s.wishlist.is_empty() {
+                        Some(-1)
+                    } else {
+                        s.selected_category
+                            .filter(|&id| s.categories.iter().any(|c| c.id == id))
                     }
+                    .unwrap_or(s.categories[0].id);
+                    s.load_movies(target);
                     s.load_current_poster();
+                    let n_movies = s.movies.len();
                     s.status = format!("{n_cats} categories, {n_movies} movies");
                     s.log_tx
                         .send(format!("loaded {n_cats} categories, {n_movies} movies"))
@@ -270,6 +332,7 @@ impl App {
                     logs: Vec::new(),
                     log_rx,
                     log_tx,
+                    log_file: open_log_file(),
                     syncing: false,
                     column_ratios: [20, 45, 35],
                     dragging_gutter: None,
@@ -298,6 +361,9 @@ impl App {
                     pending_g: false,
                     wishlist: HashSet::new(),
                     show_stats: false,
+                    stats_total_movies: 0,
+                    stats_years: Vec::new(),
+                    pending_url: None,
                 })
             }
         }
@@ -311,6 +377,14 @@ impl App {
                 self.syncing = false;
                 continue;
             }
+            if let Some(ref mut f) = self.log_file {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                use std::io::Write;
+                let _ = writeln!(f, "[{ts}] {msg}");
+            }
             self.logs.push(msg);
             if self.logs.len() > MAX_LOG_LEN {
                 self.logs.remove(0);
@@ -320,6 +394,135 @@ impl App {
     }
 
 pub fn drain_posters(&mut self) {
+        // Process pending poster URL (deferred from load_current_poster — once per frame)
+        if let Some((url, gen)) = self.pending_url.take() {
+            if self.poster_img_cache.contains_key(&url) {
+                self.log_tx.send("🖼  poster: mem cache hit".into()).ok();
+                let img = self.poster_img_cache.get(&url).unwrap();
+                let protocol = self.picker.new_resize_protocol(img.clone());
+                self.poster_protocol.replace(Some(protocol));
+                return;
+            }
+            let cache_path = format!("poster_cache/{:016x}", hash_url(&url));
+            let from_disk = std::fs::metadata(&cache_path).is_ok();
+            if from_disk {
+                self.log_tx.send(format!("🖼  poster: disk cache hit ({cache_path})")).ok();
+                let gen_arc = self.poster_gen.clone();
+                let tx = self.poster_tx.clone();
+                let picker = self.picker;
+                tokio::spawn(async move {
+                    let bytes = match std::fs::read(&cache_path) {
+                        Ok(d) => d,
+                        Err(_) => {
+                            let _ = tx.send((gen, url, None));
+                            return;
+                        }
+                    };
+                    if gen_arc.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    let tx_clone = tx.clone();
+                    let mut blocking_picker = picker;
+                    let res = tokio::task::spawn_blocking(move || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if gen_arc.load(Ordering::SeqCst) != gen {
+                                return None;
+                            }
+                            match image::load_from_memory(&bytes) {
+                                Ok(img) => {
+                                    let p = blocking_picker.new_resize_protocol(img.clone());
+                                    Some((img, p))
+                                }
+                                Err(_) => None,
+                            }
+                        }))
+                        .ok()
+                        .flatten()
+                    })
+                    .await;
+                    match res {
+                        Ok(Some((img, protocol))) => {
+                            let _ = tx_clone.send((gen, url, Some((img, protocol))));
+                        }
+                        _ => {
+                            let _ = tx_clone.send((gen, url, None));
+                        }
+                    }
+                });
+            } else {
+                self.log_tx.send(format!("🖼  poster: HTTP fetch {url}")).ok();
+                let gen_arc = self.poster_gen.clone();
+                let tx = self.poster_tx.clone();
+                let picker = self.picker;
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let cache_path = format!("poster_cache/{:016x}", hash_url(&url));
+                    let bytes = match std::fs::read(&cache_path) {
+                        Ok(d) => d,
+                        Err(_) => {
+                            let client = reqwest::Client::builder()
+                                .timeout(std::time::Duration::from_secs(15))
+                                .build()
+                                .unwrap();
+                            let resp = match client.get(&url).send().await {
+                                Ok(r) => r,
+                                Err(_) => {
+                                    let _ = tx.send((gen, url, None));
+                                    return;
+                                }
+                            };
+                            if gen_arc.load(Ordering::SeqCst) != gen {
+                                return;
+                            }
+                            let data = match resp.bytes().await {
+                                Ok(b) => b.to_vec(),
+                                Err(_) => {
+                                    let _ = tx.send((gen, url, None));
+                                    return;
+                                }
+                            };
+                            if gen_arc.load(Ordering::SeqCst) != gen {
+                                return;
+                            }
+                            let _ = std::fs::create_dir_all("poster_cache");
+                            let _ = std::fs::write(&cache_path, &data);
+                            data
+                        }
+                    };
+                    if gen_arc.load(Ordering::SeqCst) != gen {
+                        return;
+                    }
+                    let tx_clone = tx.clone();
+                    let mut blocking_picker = picker;
+                    let res = tokio::task::spawn_blocking(move || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if gen_arc.load(Ordering::SeqCst) != gen {
+                                return None;
+                            }
+                            match image::load_from_memory(&bytes) {
+                                Ok(img) => {
+                                    let p = blocking_picker.new_resize_protocol(img.clone());
+                                    Some((img, p))
+                                }
+                                Err(_) => None,
+                            }
+                        }))
+                        .ok()
+                        .flatten()
+                    })
+                    .await;
+                    match res {
+                        Ok(Some((img, protocol))) => {
+                            let _ = tx_clone.send((gen, url, Some((img, protocol))));
+                        }
+                        _ => {
+                            let _ = tx_clone.send((gen, url, None));
+                        }
+                    }
+                });
+            }
+        }
+
         let current_gen = self.poster_gen.load(Ordering::SeqCst);
         while let Ok((msg_gen, msg_url, result)) = self.poster_rx.try_recv() {
             let is_current = msg_gen == current_gen
@@ -350,206 +553,64 @@ pub fn drain_posters(&mut self) {
         }
     }
 
-    pub fn load_poster(&mut self, url: &str) {
-        if url.is_empty() {
-            return;
-        }
-        let gen = self.poster_gen.load(Ordering::SeqCst);
-        let gen_arc = self.poster_gen.clone();
-        let tx = self.poster_tx.clone();
-        let url = url.to_string();
-        let picker = self.picker;
-        let cache_path = format!("poster_cache/{:016x}", hash_url(&url));
-
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-            let bytes = match std::fs::read(&cache_path) {
-                Ok(data) => {
-                    if gen_arc.load(Ordering::SeqCst) != gen {
-                        return;
-                    }
-                    data
-                }
-                Err(_) => {
-                    let client = reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_secs(15))
-                        .build()
-                        .unwrap();
-                    let resp = match client.get(&url).send().await {
-                        Ok(r) => r,
-                        Err(_) => {
-                            let _ = tx.send((gen, url.clone(), None));
-                            return;
-                        }
-                    };
-                    if gen_arc.load(Ordering::SeqCst) != gen {
-                        return;
-                    }
-                    let data = match resp.bytes().await {
-                        Ok(b) => b.to_vec(),
-                        Err(_) => {
-                            let _ = tx.send((gen, url.clone(), None));
-                            return;
-                        }
-                    };
-                    if gen_arc.load(Ordering::SeqCst) != gen {
-                        return;
-                    }
-                    let _ = std::fs::create_dir_all("poster_cache");
-                    let _ = std::fs::write(&cache_path, &data);
-                    data
-                }
-            };
-
-            if gen_arc.load(Ordering::SeqCst) != gen {
-                return;
-            }
-
-            let gen_local = gen_arc.clone();
-            let gen_check = gen;
-            let tx_clone = tx.clone();
-            let cache_clone = cache_path.clone();
-            let mut blocking_picker = picker;
-            let blocking_res = tokio::task::spawn_blocking(move || {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if gen_local.load(Ordering::SeqCst) != gen_check {
-                        return None;
-                    }
-                    match image::load_from_memory(&bytes) {
-                        Ok(img) => {
-                            let img_cached = img.clone();
-                            let protocol = blocking_picker.new_resize_protocol(img);
-                            Some((img_cached, protocol))
-                        }
-                        Err(_) => {
-                            let _ = std::fs::remove_file(&cache_clone);
-                            None
-                        }
-                    }
-                }))
-                .ok()
-                .flatten()
-            })
-            .await;
-
-            match blocking_res {
-                Ok(Some((img, protocol))) => {
-                    let _ = tx_clone.send((gen_check, url.clone(), Some((img, protocol))));
-                }
-                _ => {
-                    let _ = tx_clone.send((gen_check, url.clone(), None));
-                }
-            }
-        });
-    }
-
-    pub fn load_poster_fast(&mut self, url: &str) {
-        if url.is_empty() {
-            return;
-        }
-        let gen = self.poster_gen.load(Ordering::SeqCst);
-        let gen_arc = self.poster_gen.clone();
-        let tx = self.poster_tx.clone();
-        let url = url.to_string();
-        let picker = self.picker;
-        let cache_path = format!("poster_cache/{:016x}", hash_url(&url));
-
-        tokio::spawn(async move {
-            let bytes = match std::fs::read(&cache_path) {
-                Ok(data) => data,
-                Err(_) => {
-                    let _ = tx.send((gen, url.clone(), None));
-                    return;
-                }
-            };
-
-            if gen_arc.load(Ordering::SeqCst) != gen {
-                return;
-            }
-
-            let gen_local = gen_arc.clone();
-            let gen_check = gen;
-            let tx_clone = tx.clone();
-            let cache_clone = cache_path.clone();
-            let mut blocking_picker = picker;
-            let blocking_res = tokio::task::spawn_blocking(move || {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if gen_local.load(Ordering::SeqCst) != gen_check {
-                        return None;
-                    }
-                    match image::load_from_memory(&bytes) {
-                        Ok(img) => {
-                            let img_cached = img.clone();
-                            let protocol = blocking_picker.new_resize_protocol(img);
-                            Some((img_cached, protocol))
-                        }
-                        Err(_) => {
-                            let _ = std::fs::remove_file(&cache_clone);
-                            None
-                        }
-                    }
-                }))
-                .ok()
-                .flatten()
-            })
-            .await;
-
-            match blocking_res {
-                Ok(Some((img, protocol))) => {
-                    let _ = tx_clone.send((gen_check, url.clone(), Some((img, protocol))));
-                }
-                _ => {
-                    let _ = tx_clone.send((gen_check, url.clone(), None));
-                }
-            }
-        });
-    }
-
     fn load_current_poster(&mut self) {
-        // Don't clear old poster — keep it visible until new one is ready
+        self.pending_url = None;
         self.current_poster_url.take();
 
         if !self.show_posters {
-            self.poster_protocol.replace(None);
             self.poster_loading = false;
             return;
         }
-        self.poster_loading = true;
-        self.poster_gen.fetch_add(1, Ordering::SeqCst);
         let list = self.active_movies();
         let url = list
             .get(self.movie_offset)
             .and_then(|m| m.stream_icon.as_ref())
             .filter(|u| !u.is_empty())
             .cloned();
-        let url = match url {
-            Some(u) => u,
-            None => {
-                self.poster_protocol.replace(None);
-                self.poster_loading = false;
-                self.poster_debug = "no image".into();
+        if let Some(u) = url {
+            if let Some(img) = self.poster_img_cache.get(&u) {
+                let protocol = self.picker.new_resize_protocol(img.clone());
+                self.poster_protocol.replace(Some(protocol));
+                self.current_poster_url = Some(u);
                 return;
             }
-        };
-
-        // Memory cache hit — instant, no blocking
-        if let Some(img) = self.poster_img_cache.get(&url) {
-            let protocol = self.picker.new_resize_protocol(img.clone());
-            self.poster_protocol.replace(Some(protocol));
-            self.poster_loading = false;
-            self.current_poster_url = Some(url);
-            return;
+            let gen = self.poster_gen.fetch_add(1, Ordering::SeqCst) + 1;
+            self.pending_url = Some((u.clone(), gen));
+            self.current_poster_url = Some(u);
         }
+    }
 
-        self.current_poster_url = Some(url.clone());
-        let cache_path = format!("poster_cache/{:016x}", hash_url(&url));
-        if std::fs::metadata(&cache_path).is_ok() {
-            self.poster_debug = "disk".into();
-            self.load_poster_fast(&url);
-        } else {
-            self.poster_debug = "http".into();
-            self.load_poster(&url);
+    pub fn load_stats(&mut self) {
+        self.stats_total_movies = 0;
+        self.stats_years.clear();
+        if let Some(ref db) = self.db {
+            let conn = db.conn.lock().unwrap();
+            if let Ok(count) = conn.query_row("SELECT COUNT(*) FROM movies", [], |r| {
+                r.get::<_, usize>(0)
+            }) {
+                self.stats_total_movies = count;
+            }
+            let mut stmt = conn
+                .prepare("SELECT name, release_date FROM movies")
+                .unwrap();
+            let mut year_counts: std::collections::HashMap<i32, usize> =
+                std::collections::HashMap::new();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .unwrap();
+            for row in rows.flatten() {
+                let (name, release_date) = row;
+                let year = extract_year(release_date.as_ref())
+                    .or_else(|| parse_movie_tags(&name).3);
+                if let Some(y) = year {
+                    *year_counts.entry(y).or_insert(0) += 1;
+                }
+            }
+            let mut pairs: Vec<(i32, usize)> = year_counts.into_iter().collect();
+            pairs.sort_by(|a, b| b.0.cmp(&a.0));
+            self.stats_years = pairs;
         }
     }
 
@@ -687,7 +748,12 @@ pub fn drain_posters(&mut self) {
             self.pending_g = false;
             if key == KeyCode::Char('g') && self.focus != Focus::Details {
                 match self.focus {
-                    Focus::Categories => self.category_offset = 0,
+                    Focus::Categories => {
+                        self.category_offset = 0;
+                        if let Some(cat) = self.categories.get(0) {
+                            self.load_movies(cat.id);
+                        }
+                    }
                     _ => {
                         self.movie_offset = 0;
                         self.load_current_poster();
@@ -699,7 +765,12 @@ pub fn drain_posters(&mut self) {
         }
         match key {
             KeyCode::Char('q') => return false,
-            KeyCode::Char('h') => self.show_stats = !self.show_stats,
+            KeyCode::Char('h') => {
+                self.show_stats = !self.show_stats;
+                if self.show_stats {
+                    self.load_stats();
+                }
+            }
             KeyCode::Left => {
                 if self.focus == Focus::Movies {
                     self.focus = Focus::Categories;
@@ -743,6 +814,9 @@ pub fn drain_posters(&mut self) {
             KeyCode::Char('G') if self.focus != Focus::Details => match self.focus {
                 Focus::Categories => {
                     self.category_offset = self.categories.len().saturating_sub(1);
+                    if let Some(cat) = self.categories.get(self.category_offset) {
+                        self.load_movies(cat.id);
+                    }
                 }
                 _ => {
                     let n = self.active_movies().len();
@@ -752,7 +826,9 @@ pub fn drain_posters(&mut self) {
             },
             KeyCode::Enter if self.focus == Focus::Categories => {
                 if let Some(cat) = self.categories.get(self.category_offset) {
-                    self.load_movies(cat.id);
+                    if self.selected_category != Some(cat.id) {
+                        self.load_movies(cat.id);
+                    }
                     self.focus = Focus::Movies;
                     self.load_current_poster();
                 }
@@ -942,15 +1018,19 @@ pub fn drain_posters(&mut self) {
     }
 
     pub fn toggle_wishlist(&mut self) {
-        let id = self.movies.get(self.movie_offset).map(|m| m.id);
-        if let (Some(movie_id), Some(ref db)) = (id, self.db.as_ref()) {
+        let movie = self.movies.get(self.movie_offset).map(|m| (m.id, m.name.clone()));
+        if let (Some((movie_id, ref movie_name)), Some(ref db)) = (movie, self.db.as_ref()) {
             let added = db.toggle_wishlist(movie_id);
             if added {
                 self.wishlist.insert(movie_id);
-                self.log_tx.send("❤️ added to wishlist".into()).ok();
+                self.log_tx
+                    .send(format!("❤️ added to wishlist: {movie_name}"))
+                    .ok();
             } else {
                 self.wishlist.remove(&movie_id);
-                self.log_tx.send("💔 removed from wishlist".into()).ok();
+                self.log_tx
+                    .send(format!("💔 removed from wishlist: {movie_name}"))
+                    .ok();
             }
             // Update the wishlist category entry in-place
             let wc = self.wishlist.len();
@@ -1153,7 +1233,9 @@ pub fn drain_posters(&mut self) {
 
     pub fn load_movies(&mut self, category_id: i64) {
         if let Some(old) = self.selected_category {
-            self.cat_scroll_pos.insert(old, self.movie_offset);
+            if old != category_id {
+                self.cat_scroll_pos.insert(old, self.movie_offset);
+            }
         }
         self.movies.clear();
         self.movie_offset = 0;
@@ -1168,7 +1250,7 @@ pub fn drain_posters(&mut self) {
                 if let Some(ref db) = self.db {
                     let conn = db.conn.lock().unwrap();
                     let sql = format!(
-                        "SELECT id, name, stream_icon, rating, release_date, plot, container_extension, genre FROM movies WHERE id IN ({}) ORDER BY name",
+                        "SELECT id, name, stream_icon, rating, release_date, plot, container_extension, genre, \"cast\", director FROM movies WHERE id IN ({}) ORDER BY name",
                         ids.join(",")
                     );
                     let mut stmt = conn.prepare(&sql).unwrap();
@@ -1177,9 +1259,7 @@ pub fn drain_posters(&mut self) {
                             let name: String = row.get(1)?;
                             let release_date: Option<String> = row.get(4)?;
                             let (version, audio, subs, year_from_name) = parse_movie_tags(&name);
-                            let year = release_date
-                                .as_ref()
-                                .and_then(|d| d[..4].parse::<i32>().ok())
+                            let year = extract_year(release_date.as_ref())
                                 .or(year_from_name);
                             Ok(MovieItem {
                                 id: row.get(0)?,
@@ -1190,6 +1270,8 @@ pub fn drain_posters(&mut self) {
                                 plot: row.get(5)?,
                                 container_extension: row.get(6)?,
                                 genre: row.get(7)?,
+                                cast: row.get(8)?,
+                                director: row.get(9)?,
                                 year,
                                 version,
                                 audio,
@@ -1205,7 +1287,7 @@ pub fn drain_posters(&mut self) {
         } else if let Some(ref db) = self.db {
             let conn = db.conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, name, stream_icon, rating, release_date, plot, container_extension, genre FROM movies WHERE category_id = ?1 ORDER BY name")
+                .prepare("SELECT id, name, stream_icon, rating, release_date, plot, container_extension, genre, \"cast\", director FROM movies WHERE category_id = ?1 ORDER BY name")
                 .unwrap();
             let rows = stmt
                 .query_map(rusqlite::params![category_id], |row| {
@@ -1225,6 +1307,8 @@ pub fn drain_posters(&mut self) {
                         plot: row.get(5)?,
                         container_extension: row.get(6)?,
                         genre: row.get(7)?,
+                        cast: row.get(8)?,
+                        director: row.get(9)?,
                         year,
                         version,
                         audio,
@@ -1263,15 +1347,31 @@ pub fn drain_posters(&mut self) {
         self.syncing = true;
         self.status = "Syncing...".into();
         let log = self.log_tx();
+        let started = std::time::Instant::now();
         tokio::spawn(async move {
+            log.send("⤓ fetching categories...".into()).ok();
+            let t0 = std::time::Instant::now();
             match api::sync_vod_categories(&cfg, &db).await {
-                Ok(n) => log.send(format!("✓ {n} categories")).ok(),
+                Ok(n) => log
+                    .send(format!(
+                        "✓ {n} categories in {}ms",
+                        t0.elapsed().as_millis()
+                    ))
+                    .ok(),
                 Err(e) => log.send(format!("✗ categories: {e}")).ok(),
             };
+            log.send("⤓ fetching movies...".into()).ok();
+            let t1 = std::time::Instant::now();
             match api::sync_vod_streams(&cfg, &db).await {
-                Ok(n) => log.send(format!("✓ {n} movies")).ok(),
+                Ok(n) => log
+                    .send(format!(
+                        "✓ {n} movies in {}ms",
+                        t1.elapsed().as_millis()
+                    ))
+                    .ok(),
                 Err(e) => log.send(format!("✗ movies: {e}")).ok(),
             };
+            log.send(format!("⤓ done in {}ms", started.elapsed().as_millis())).ok();
             log.send("SYNC_DONE".into()).ok();
         });
     }
@@ -1432,7 +1532,7 @@ mod tests {
 
     #[test]
     fn parse_tags_multi_fhd_year() {
-        let (v, a, s, y) = parse_movie_tags("Star Wars (MULTI) FHD 2024");
+        let (v, a, s, y) = parse_movie_tags("Star Wars (MULTI) FHD (2024)");
         assert_eq!(v, Some("FHD".into()));
         assert_eq!(a, Some("Multi".into()));
         assert_eq!(s, None);
@@ -1449,11 +1549,29 @@ mod tests {
 
     #[test]
     fn parse_tags_year_range() {
-        assert_eq!(parse_movie_tags("Old 1899").3, None);
-        assert_eq!(parse_movie_tags("Movie 1900").3, Some(1900));
-        assert_eq!(parse_movie_tags("Movie 2000").3, Some(2000));
-        assert_eq!(parse_movie_tags("Movie 2099").3, Some(2099));
-        assert_eq!(parse_movie_tags("Future 2100").3, None);
+        assert_eq!(parse_movie_tags("Old (1899)").3, None);
+        assert_eq!(parse_movie_tags("Movie (1900)").3, Some(1900));
+        assert_eq!(parse_movie_tags("Movie (2000)").3, Some(2000));
+        assert_eq!(parse_movie_tags("Movie (2099)").3, Some(2099));
+        assert_eq!(parse_movie_tags("Future (2100)").3, None);
+    }
+
+    #[test]
+    fn parse_tags_year_bracket() {
+        assert_eq!(parse_movie_tags("Movie [2023]").3, Some(2023));
+    }
+
+    #[test]
+    fn parse_tags_bare_year_at_end() {
+        assert_eq!(parse_movie_tags("Blade Runner 2049").3, Some(2049));
+        assert_eq!(parse_movie_tags("Movie 2024 FHD").3, None);
+        assert_eq!(parse_movie_tags("20th Century Boys (MULTI) FHD 2008").3, Some(2008));
+        assert_eq!(parse_movie_tags("47 Ronin (MULTI) HD 2013").3, Some(2013));
+    }
+
+    #[test]
+    fn parse_tags_year_prefers_paren() {
+        assert_eq!(parse_movie_tags("Movie (1999) FHD 2024").3, Some(1999));
     }
 
     #[test]

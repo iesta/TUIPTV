@@ -34,7 +34,9 @@ impl Database {
                 rating TEXT,
                 release_date TEXT,
                 plot TEXT,
-                genre TEXT
+                genre TEXT,
+                \"cast\" TEXT,
+                director TEXT
             );
             CREATE TABLE IF NOT EXISTS wishlist (
                 movie_id INTEGER PRIMARY KEY
@@ -45,6 +47,8 @@ impl Database {
                 ON movies(name);",
         )?;
         let _ = conn.execute("ALTER TABLE movies ADD COLUMN genre TEXT", []);
+        let _ = conn.execute("ALTER TABLE movies ADD COLUMN \"cast\" TEXT", []);
+        let _ = conn.execute("ALTER TABLE movies ADD COLUMN director TEXT", []);
         Ok(())
     }
 
