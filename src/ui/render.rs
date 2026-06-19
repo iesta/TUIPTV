@@ -324,8 +324,8 @@ fn movie_popover(frame: &mut Frame, area: Rect, app: &App) {
         Some(m) => m,
         None => return,
     };
-    let pop_w = ((area.width as i32) * 70 / 100).max(50) as u16;
-    let pop_h = ((area.height as i32) * 70 / 100).max(20) as u16;
+    let pop_w = ((area.width as i32) * 80 / 100).max(50) as u16;
+    let pop_h = ((area.height as i32) * 80 / 100).max(20) as u16;
     let pop_x = (area.width.saturating_sub(pop_w)) / 2;
     let pop_y = (area.height.saturating_sub(pop_h)) / 2;
     let pop = Rect {
