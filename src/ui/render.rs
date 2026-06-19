@@ -375,13 +375,16 @@ fn movie_popover(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let mut lines: Vec<Line> = vec![
+        Line::from(format!("Rating: {}", m.rating.as_deref().unwrap_or("N/A"))),
         Line::from(format!(
-            "Rating: {}  Year: {}  Length: {}  Released: {}",
-            m.rating.as_deref().unwrap_or("N/A"),
-            m.year.map(|y| y.to_string()).as_deref().unwrap_or("N/A"),
-            m.container_extension.as_deref().unwrap_or("N/A"),
-            m.release_date.as_deref().unwrap_or("N/A"),
+            "Year: {}",
+            m.year.map(|y| y.to_string()).as_deref().unwrap_or("N/A")
         )),
+        Line::from(format!(
+            "Released: {}",
+            m.release_date.as_deref().unwrap_or("N/A")
+        )),
+        Line::from(format!("Length: {}", m.container_extension.as_deref().unwrap_or("N/A"))),
         Line::from(format!("Genre: {}", m.genre.as_deref().unwrap_or("N/A"))),
         Line::from(format!("Version: {}", m.version.as_deref().unwrap_or("N/A"))),
         Line::from(format!("Audio: {}", m.audio.as_deref().unwrap_or("N/A"))),
