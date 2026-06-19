@@ -711,8 +711,12 @@ pub fn drain_posters(&mut self) {
         if self.show_movie_popover {
             if key == KeyCode::Esc || key == KeyCode::Char('q') || key == KeyCode::Enter {
                 self.show_movie_popover = false;
+                return true;
             }
-            return true;
+            if key == KeyCode::Char(' ') {
+                self.toggle_wishlist();
+                return true;
+            }
         }
         if self.show_filter && self.focus == Focus::Movies {
             match key {
