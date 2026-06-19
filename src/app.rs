@@ -190,6 +190,7 @@ pub struct App {
     pub stats_years: Vec<(i32, usize)>,
     pub pending_url: Option<(String, u64)>,
     pub table_mode: bool,
+    pub show_movie_popover: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +288,7 @@ impl App {
                     stats_years: Vec::new(),
                     pending_url: None,
                     table_mode: false,
+                    show_movie_popover: false,
                 };
                 s.load_layout();
                 if let Some(ref db) = s.db {
@@ -367,6 +369,7 @@ if n_cats > 0 {
                     stats_years: Vec::new(),
                     pending_url: None,
                     table_mode: false,
+                    show_movie_popover: false,
                 })
             }
         }
@@ -705,6 +708,12 @@ pub fn drain_posters(&mut self) {
             }
             return true;
         }
+        if self.show_movie_popover {
+            if key == KeyCode::Esc || key == KeyCode::Char('q') || key == KeyCode::Enter {
+                self.show_movie_popover = false;
+            }
+            return true;
+        }
         if self.show_filter && self.focus == Focus::Movies {
             match key {
                 KeyCode::Esc => {
@@ -837,6 +846,13 @@ pub fn drain_posters(&mut self) {
                     self.load_current_poster();
                 }
             },
+            KeyCode::Enter if self.show_movie_popover => {
+                self.show_movie_popover = false;
+            }
+            KeyCode::Enter if self.focus == Focus::Movies => {
+                self.show_movie_popover = true;
+                self.load_current_poster();
+            }
             KeyCode::Enter if self.focus == Focus::Categories => {
                 if let Some(cat) = self.categories.get(self.category_offset) {
                     if self.selected_category != Some(cat.id) {

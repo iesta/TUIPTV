@@ -319,6 +319,77 @@ fn details_pane(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+fn movie_popover(frame: &mut Frame, area: Rect, app: &App) {
+    let m = match app.movies.get(app.movie_offset) {
+        Some(m) => m,
+        None => return,
+    };
+    let pop_w = (area.width as i32 - 4).max(40) as u16;
+    let pop_h = (area.height as i32 - 4).max(20) as u16;
+    let pop_x = (area.width.saturating_sub(pop_w)) / 2;
+    let pop_y = (area.height.saturating_sub(pop_h)) / 2;
+    let pop = Rect {
+        x: pop_x,
+        y: pop_y,
+        width: pop_w,
+        height: pop_h,
+    };
+    frame.render_widget(Clear, pop);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", m.name))
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(pop);
+    frame.render_widget(block, pop);
+
+    if inner.width < 20 || inner.height < 8 {
+        return;
+    }
+
+    let [poster_area, text_area] = *Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(45),
+            Constraint::Percentage(55),
+        ])
+        .split(inner)
+    else {
+        return;
+    };
+
+    if app.show_posters {
+        if let Some(ref mut protocol) = *app.poster_protocol.borrow_mut() {
+            let stateful_image = StatefulImage::new(None).resize(Resize::Fit(None));
+            frame.render_stateful_widget(stateful_image, poster_area, protocol);
+        } else {
+            frame.render_widget(Clear, poster_area);
+            if app.poster_loading {
+                frame.render_widget(
+                    Paragraph::new("Loading poster...").style(Style::default().fg(Color::Gray)),
+                    poster_area,
+                );
+            }
+        }
+    } else {
+        frame.render_widget(Clear, poster_area);
+    }
+
+    let text = format!(
+        "Rating: {}\nYear: {}\nGenre: {}\nCast: {}\nDirector: {}\nWishlist: {}\n\n{}\n\nEsc/Enter/q: close",
+        m.rating.as_deref().unwrap_or("N/A"),
+        m.year.map(|y| y.to_string()).as_deref().unwrap_or("N/A"),
+        m.genre.as_deref().unwrap_or("N/A"),
+        m.cast.as_deref().unwrap_or("N/A"),
+        m.director.as_deref().unwrap_or("N/A"),
+        if app.wishlist.contains(&m.id) { "❤️" } else { "—" },
+        m.plot.as_deref().unwrap_or("No plot available."),
+    );
+    frame.render_widget(
+        Paragraph::new(text).wrap(Wrap { trim: false }),
+        text_area,
+    );
+}
+
 fn config_screen(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -518,5 +589,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if app.show_stats {
         stats_screen(frame, frame.area(), app);
+    }
+    if app.show_movie_popover {
+        movie_popover(frame, frame.area(), app);
     }
 }
