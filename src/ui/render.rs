@@ -324,8 +324,8 @@ fn movie_popover(frame: &mut Frame, area: Rect, app: &App) {
         Some(m) => m,
         None => return,
     };
-    let pop_w = (area.width as i32 - 4).max(40) as u16;
-    let pop_h = (area.height as i32 - 4).max(20) as u16;
+    let pop_w = ((area.width as i32) * 60 / 100).max(50) as u16;
+    let pop_h = ((area.height as i32) * 60 / 100).max(20) as u16;
     let pop_x = (area.width.saturating_sub(pop_w)) / 2;
     let pop_y = (area.height.saturating_sub(pop_h)) / 2;
     let pop = Rect {
@@ -374,18 +374,40 @@ fn movie_popover(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(Clear, poster_area);
     }
 
-    let text = format!(
-        "Rating: {}\nYear: {}\nGenre: {}\nCast: {}\nDirector: {}\nWishlist: {}\n\n{}\n\nEsc/Enter/q: close",
-        m.rating.as_deref().unwrap_or("N/A"),
-        m.year.map(|y| y.to_string()).as_deref().unwrap_or("N/A"),
-        m.genre.as_deref().unwrap_or("N/A"),
-        m.cast.as_deref().unwrap_or("N/A"),
-        m.director.as_deref().unwrap_or("N/A"),
-        if app.wishlist.contains(&m.id) { "❤️" } else { "—" },
-        m.plot.as_deref().unwrap_or("No plot available."),
+    let mut lines: Vec<Line> = vec![
+        Line::from(format!(
+            "Rating: {}  Year: {}  Length: {}  Released: {}",
+            m.rating.as_deref().unwrap_or("N/A"),
+            m.year.map(|y| y.to_string()).as_deref().unwrap_or("N/A"),
+            m.container_extension.as_deref().unwrap_or("N/A"),
+            m.release_date.as_deref().unwrap_or("N/A"),
+        )),
+        Line::from(format!("Genre: {}", m.genre.as_deref().unwrap_or("N/A"))),
+        Line::from(format!("Version: {}", m.version.as_deref().unwrap_or("N/A"))),
+        Line::from(format!("Audio: {}", m.audio.as_deref().unwrap_or("N/A"))),
+        Line::from(format!("Subs: {}", m.subs.as_deref().unwrap_or("N/A"))),
+        Line::from(format!(
+            "Cast: {}",
+            m.cast.as_deref().unwrap_or("N/A")
+        )),
+        Line::from(format!(
+            "Director: {}",
+            m.director.as_deref().unwrap_or("N/A")
+        )),
+        Line::from(format!(
+            "Wishlist: {}",
+            if app.wishlist.contains(&m.id) { "❤️" } else { "—" }
+        )),
+        Line::from(""),
+        Line::from(m.plot.as_deref().unwrap_or("No plot available.")),
+    ];
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from("v: open in VLC (or other)  Esc/Enter/q: close")
+            .style(Style::default().fg(Color::DarkGray)),
     );
     frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }),
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
         text_area,
     );
 }
