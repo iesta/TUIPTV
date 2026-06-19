@@ -851,6 +851,7 @@ pub fn drain_posters(&mut self) {
             }
             KeyCode::Enter if self.focus == Focus::Movies => {
                 self.show_movie_popover = true;
+                self.poster_protocol.replace(None);
                 self.load_current_poster();
             }
             KeyCode::Enter if self.focus == Focus::Categories => {
